@@ -84,3 +84,13 @@ class Prediction(models.Model):
 
     def __str__(self):
         return self.points_obtained
+    
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    bio = models.TextField(blank=True)
+
+    avatar = models.ImageField(upload_to='profiles/', null=True, blank=True)
+
+    def __str__(self):
+        return self.user.username 
+    
