@@ -44,11 +44,13 @@ class Week(models.Model):
 
     
 class Match(models.Model):
-    home_team = models.ForeignKey(Team, on_delete=models.CASCADE)
-    away_team = models.ForeignKey(Team, on_delete=models.CASCADE)
+    home_team = models.ForeignKey(Team,on_delete=models.CASCADE,
+                                   related_name='home_matches')
+    away_team = models.ForeignKey(Team, on_delete=models.CASCADE,
+                                  related_name='away_matches')
 
-    # home_team_logo = models.ImageField(upload_to='match/')
-    # away_team_logo = models.ImageField(upload_to='match/')
+    home_team_logo = models.ImageField(upload_to='match/')
+    away_team_logo = models.ImageField(upload_to='match/')
 
     match_week = models.ForeignKey(Week, on_delete=models.CASCADE)
     date_time = models.DateTimeField()
@@ -56,7 +58,7 @@ class Match(models.Model):
     def __str__(self):
         return f"{self.date_time}: {self.home_team} - {self.away_team}\n{self.match_week}"
 
-class Results(models.Model):
+class Result(models.Model):
     match = models.OneToOneField(Match, on_delete=models.CASCADE)
     home_score = models.PositiveIntegerField()
     away_score = models.PositiveIntegerField()
@@ -74,8 +76,8 @@ class PoolWeek(models.Model):
         return f'{self.week} - {self.user}: score[{self.total_score}]'
     
 class Prediction(models.Model):
-    pool = models.ForeignKey(PoolWeek)
-    match = models.ForeignKey(Match)
+    pool = models.ForeignKey(PoolWeek, on_delete=models.CASCADE)
+    match = models.ForeignKey(Match, on_delete=models.CASCADE)
     home_prediction = models.PositiveIntegerField()
     away_prediction = models.PositiveIntegerField()
     points_obtained = models.PositiveIntegerField(default=0)
