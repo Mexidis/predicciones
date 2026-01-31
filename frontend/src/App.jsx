@@ -26,7 +26,7 @@ function App() {
                 </p>
             </div>
             <p className="read-the-docs">
-                Hola a todos los que mandan quinielas
+                Hola a todos los que mandan quinielas y sí le atinan
             </p>
         </>
     )
