@@ -30,17 +30,23 @@ def get_or_create_structure():
         }
     )
 
-    tourn_lmx, _ = Tournament.objects.get_or_create(
-        league=league_lmx,
-        name="Apertura 2026",
-        defaults={"year": 2026, "is_active": True}
-    )
+    tourn_lmx = Tournament.objects.filter(league=league_lmx).first()
+    if not tourn_lmx:
+        tourn_lmx = Tournament.objects.create(
+            league=league_lmx,
+            name="Apertura 2026",
+            year=2026,
+            is_active=True
+        )
 
-    tourn_nfl, _ = Tournament.objects.get_or_create(
-        league=league_nfl,
-        name="Temporada NFL 2026",
-        defaults={"year": 2026, "is_active": True}
-    )
+    tourn_nfl = Tournament.objects.filter(league=league_nfl).first()
+    if not tourn_nfl:
+        tourn_nfl = Tournament.objects.create(
+            league=league_nfl,
+            name="Temporada NFL 2024",
+            year=2024,
+            is_active=True
+        )
 
     return league_lmx, league_nfl, tourn_lmx, tourn_nfl
 
@@ -52,15 +58,66 @@ def format_form_string(form_str):
     letters = [mapping.get(ch.upper(), ch.upper()) for ch in form_str[-5:]]
     return "-".join(letters)
 
-def sync_espn_nfl(week_number=None):
-    """Sincroniza partidos de NFL desde ESPN."""
+def get_or_create_nfl_team(league_nfl, comp_team):
+    """Obtiene o crea un equipo de NFL evitando duplicados entre apodos y nombres de franquicia."""
+    espn_id = str(comp_team.get('id', '')).strip()
+    display_name = (comp_team.get('displayName') or '').strip()
+    short_name = (comp_team.get('shortDisplayName') or comp_team.get('name') or '').strip()
+    abbrev = (comp_team.get('abbreviation') or '').strip()
+    logo = comp_team.get('logo') or f"https://a.espncdn.com/i/teamlogos/nfl/500/{espn_id}.png"
+
+    team = None
+    if espn_id:
+        team = Team.objects.filter(league=league_nfl, espn_id=espn_id).first()
+
+    if not team and display_name:
+        team = Team.objects.filter(league=league_nfl, name__iexact=display_name).first()
+
+    if not team and short_name:
+        team = Team.objects.filter(league=league_nfl, short_name__iexact=short_name).first()
+
+    if not team and short_name:
+        team = Team.objects.filter(league=league_nfl, name__iexact=short_name).first()
+
+    if team:
+        # Actualizar datos canónicos
+        updated = False
+        if espn_id and not team.espn_id:
+            team.espn_id = espn_id
+            updated = True
+        if short_name and not team.short_name:
+            team.short_name = short_name or abbrev
+            updated = True
+        if logo and not team.logo_url:
+            team.logo_url = logo
+            updated = True
+        if updated:
+            team.save()
+        return team
+
+    return Team.objects.create(
+        league=league_nfl,
+        name=display_name or short_name,
+        short_name=short_name or abbrev,
+        logo_url=logo,
+        espn_id=espn_id or None
+    )
+
+def sync_espn_nfl(week_number=None, year=2024):
+    """
+    Sincroniza partidos reales de NFL desde ESPN Scoreboard.
+    Usa el calendario oficial (por defecto temporada regular 2024).
+    """
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
-    params = {}
+    params = {
+        'seasontype': 2,
+        'dates': str(year)
+    }
     if week_number:
         params['week'] = week_number
 
     try:
-        resp = requests.get(ESPN_NFL_URL, params=params, timeout=10)
+        resp = requests.get(ESPN_NFL_URL, params=params, timeout=12)
         if resp.status_code != 200:
             return {"error": f"ESPN returned status {resp.status_code}"}
         data = resp.json()
@@ -78,12 +135,11 @@ def sync_espn_nfl(week_number=None):
     updated_matches = 0
 
     for event in events:
-        espn_id = event.get('id')
+        espn_id = str(event.get('id', '')).strip()
         kickoff_raw = event.get('date')
         kickoff = parse_datetime(kickoff_raw) if kickoff_raw else timezone.now()
-        
+
         status_type = event.get('status', {}).get('type', {}).get('name', 'STATUS_SCHEDULED')
-        
         if 'FINAL' in status_type:
             status = 'FINAL'
         elif 'IN_PROGRESS' in status_type:
@@ -101,41 +157,23 @@ def sync_espn_nfl(week_number=None):
         home_comp = next((c for c in competitors if c.get('homeAway') == 'home'), competitors[0])
         away_comp = next((c for c in competitors if c.get('homeAway') == 'away'), competitors[1])
 
-        # Obtener o crear equipos
-        home_team, _ = Team.objects.get_or_create(
-            league=league_nfl,
-            name=home_comp['team']['displayName'],
-            defaults={
-                "short_name": home_comp['team'].get('shortDisplayName', home_comp['team']['name']),
-                "logo_url": home_comp['team'].get('logo', ''),
-                "espn_id": home_comp['team'].get('id')
-            }
-        )
-        away_team, _ = Team.objects.get_or_create(
-            league=league_nfl,
-            name=away_comp['team']['displayName'],
-            defaults={
-                "short_name": away_comp['team'].get('shortDisplayName', away_comp['team']['name']),
-                "logo_url": away_comp['team'].get('logo', ''),
-                "espn_id": away_comp['team'].get('id')
-            }
-        )
+        home_team = get_or_create_nfl_team(league_nfl, home_comp.get('team', {}))
+        away_team = get_or_create_nfl_team(league_nfl, away_comp.get('team', {}))
 
-        # Forma o record (ej. "5-2")
-        home_record = home_comp.get('records', [{}])[0].get('summary', '')
-        away_record = away_comp.get('records', [{}])[0].get('summary', '')
+        # Récord de temporada de cada equipo (ej: "5-2")
+        home_record = home_comp.get('records', [{}])[0].get('summary', '') if home_comp.get('records') else ''
+        away_record = away_comp.get('records', [{}])[0].get('summary', '') if away_comp.get('records') else ''
 
-        match, _ = Match.objects.get_or_create(
-            week=week_obj,
-            home_team=home_team,
-            away_team=away_team,
-            defaults={
-                "date_time": kickoff,
-                "espn_id": espn_id,
-                "home_form": home_record,
-                "away_form": away_record,
-            }
-        )
+        # Buscar partido por espn_id o equipos en esa semana para evitar duplicados
+        match = None
+        if espn_id:
+            match = Match.objects.filter(week=week_obj, espn_id=espn_id).first()
+        if not match:
+            match = Match.objects.filter(week=week_obj, home_team=home_team, away_team=away_team).first()
+
+        if not match:
+            match = Match(week=week_obj, home_team=home_team, away_team=away_team)
+
         match.date_time = kickoff
         match.espn_id = espn_id
         if home_record:
@@ -159,7 +197,7 @@ def sync_espn_nfl(week_number=None):
 
     return {"status": "ok", "week": espn_week_num, "matches_updated": updated_matches}
 
-def sync_espn_lmx(date_str=None):
+def sync_espn_lmx(date_str=None, week_number=None):
     """Sincroniza partidos de Liga MX desde ESPN."""
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
     params = {}
@@ -167,20 +205,18 @@ def sync_espn_lmx(date_str=None):
         params['dates'] = date_str
 
     try:
-        resp = requests.get(ESPN_LMX_URL, params=params, timeout=10)
+        resp = requests.get(ESPN_LMX_URL, params=params, timeout=12)
         if resp.status_code != 200:
             return {"error": f"ESPN returned status {resp.status_code}"}
         data = resp.json()
     except Exception as e:
         return {"error": str(e)}
 
-    # Buscar o crear la jornada actual
     events = data.get('events', [])
     if not events:
         return {"status": "ok", "message": "No events found"}
 
-    # Determinar jornada o usar la que viene
-    week_num = 13
+    week_num = week_number or 14
     week_obj, _ = MatchWeek.objects.get_or_create(
         tournament=tourn_lmx,
         week_number=week_num,
@@ -189,10 +225,10 @@ def sync_espn_lmx(date_str=None):
 
     updated_matches = 0
     for event in events:
-        espn_id = event.get('id')
+        espn_id = str(event.get('id', '')).strip()
         kickoff_raw = event.get('date')
         kickoff = parse_datetime(kickoff_raw) if kickoff_raw else timezone.now()
-        
+
         status_type = event.get('status', {}).get('type', {}).get('name', 'STATUS_SCHEDULED')
         if 'FINAL' in status_type:
             status = 'FINAL'
@@ -231,17 +267,15 @@ def sync_espn_lmx(date_str=None):
             }
         )
 
-        match, _ = Match.objects.get_or_create(
-            week=week_obj,
-            home_team=home_team,
-            away_team=away_team,
-            defaults={
-                "date_time": kickoff,
-                "espn_id": espn_id,
-                "home_form": home_form,
-                "away_form": away_form
-            }
-        )
+        match = None
+        if espn_id:
+            match = Match.objects.filter(week=week_obj, espn_id=espn_id).first()
+        if not match:
+            match = Match.objects.filter(week=week_obj, home_team=home_team, away_team=away_team).first()
+
+        if not match:
+            match = Match(week=week_obj, home_team=home_team, away_team=away_team)
+
         match.date_time = kickoff
         match.espn_id = espn_id
         if home_form:

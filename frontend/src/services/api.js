@@ -175,4 +175,23 @@ export const api = {
     } catch (e) {}
     return { matches: [], participants: [] };
   }
+,
+
+  async adminChangePassword(currentPassword, newPassword, username = 'admin') {
+    const res = await fetch(`${API_BASE}/admin-portal/change-password/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword, username })
+    });
+    return await res.json();
+  },
+
+  async adminResetParticipantPin(userId, newPin) {
+    const res = await fetch(`${API_BASE}/admin-portal/participants/${userId}/reset-pin/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_pin: newPin })
+    });
+    return await res.json();
+  },
 };

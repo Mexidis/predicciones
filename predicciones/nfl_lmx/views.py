@@ -588,3 +588,46 @@ def api_admin_get_week_predictions(request):
     })
 
 
+
+
+@api_view(['POST'])
+def api_admin_change_password(request):
+    """Permite al administrador cambiar su contraseña."""
+    current_password = request.data.get('current_password', '').strip()
+    new_password = request.data.get('new_password', '').strip()
+    username = request.data.get('username', 'admin').strip()
+
+    if not current_password or not new_password:
+        return Response({'error': 'Debes ingresar la contraseña actual y la nueva contraseña.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(new_password) < 4:
+        return Response({'error': 'La nueva contraseña debe tener al menos 4 caracteres.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = authenticate(username=username, password=current_password)
+    if user is None:
+        admin_user = User.objects.filter(is_superuser=True).first()
+        if admin_user and admin_user.check_password(current_password):
+            user = admin_user
+
+    if user is None:
+        return Response({'error': 'La contraseña actual no es correcta.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    user.set_password(new_password)
+    user.save()
+    return Response({'success': True, 'message': 'Contraseña actualizada exitosamente.'})
+
+@api_view(['POST'])
+def api_admin_reset_participant_pin(request, user_id):
+    """Permite al administrador actualizar o restablecer el PIN de cualquier integrante."""
+    new_pin = request.data.get('new_pin', '').strip()
+    if not new_pin:
+        return Response({'error': 'Debes ingresar el nuevo PIN o contraseña.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = User.objects.get(id=user_id)
+        user.set_password(new_pin)
+        user.save()
+        name = user.profile.display_name if hasattr(user, 'profile') else user.username
+        return Response({'success': True, 'message': f'PIN de {name} actualizado con éxito.'})
+    except User.DoesNotExist:
+        return Response({'error': 'Participante no encontrado.'}, status=status.HTTP_404_NOT_FOUND)

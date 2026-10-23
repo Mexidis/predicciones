@@ -38,6 +38,17 @@ export default function AdminPortal({
   const [isSavingPicks, setIsSavingPicks] = useState(false);
   const [picksSaveMsg, setPicksSaveMsg] = useState(null);
 
+  // Change password state
+  const [currentPass, setCurrentPass] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [confirmPass, setConfirmPass] = useState('');
+  const [passMsg, setPassMsg] = useState(null);
+  const [isChangingPass, setIsChangingPass] = useState(false);
+
+  // Participant pin edit state
+  const [editingPinUserId, setEditingPinUserId] = useState(null);
+  const [newParticipantPin, setNewParticipantPin] = useState('');
+
   // Bulk match scores state
   const [matchScores, setMatchScores] = useState({});
   const [isSavingScores, setIsSavingScores] = useState(false);
@@ -242,6 +253,58 @@ export default function AdminPortal({
     }
   };
 
+  // Cambiar contraseña de admin
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPassMsg(null);
+    if (!currentPass || !newPass) {
+      setPassMsg({ error: 'Todos los campos son requeridos.' });
+      return;
+    }
+    if (newPass !== confirmPass) {
+      setPassMsg({ error: 'La nueva contraseña y la confirmación no coinciden.' });
+      return;
+    }
+    if (newPass.length < 4) {
+      setPassMsg({ error: 'La nueva contraseña debe tener al menos 4 caracteres.' });
+      return;
+    }
+
+    setIsChangingPass(true);
+    try {
+      const res = await api.adminChangePassword(currentPass, newPass, adminUser?.username || 'admin');
+      if (res.error) {
+        setPassMsg({ error: res.error });
+      } else {
+        setPassMsg({ success: '¡Contraseña de administrador actualizada con éxito!' });
+        setCurrentPass('');
+        setNewPass('');
+        setConfirmPass('');
+      }
+    } catch {
+      setPassMsg({ error: 'Error al conectar con el servidor.' });
+    } finally {
+      setIsChangingPass(false);
+    }
+  };
+
+  // Restablecer PIN de participante
+  const handleResetPin = async (userId) => {
+    if (!newParticipantPin.trim()) return;
+    try {
+      const res = await api.adminResetParticipantPin(userId, newParticipantPin.trim());
+      if (res.error) {
+        alert(res.error);
+      } else {
+        alert(res.message);
+        setEditingPinUserId(null);
+        setNewParticipantPin('');
+      }
+    } catch {
+      alert('Error al actualizar PIN');
+    }
+  };
+
   // Crear participante manual
   const handleCreateParticipant = async (e) => {
     e.preventDefault();
@@ -429,7 +492,7 @@ export default function AdminPortal({
         </div>
 
         {/* Navigation Tabs inside Admin */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 p-1 bg-stadium-900 rounded-2xl border border-white/5 shadow-md gap-1">
+        <div className="grid grid-cols-2 sm:grid-cols-5 p-1 bg-stadium-900 rounded-2xl border border-white/5 shadow-md gap-1">
           <button
             onClick={() => setPortalTab('user_predictions')}
             className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold font-sport uppercase tracking-wider transition ${
@@ -476,6 +539,18 @@ export default function AdminPortal({
           >
             <Share2 className="w-4 h-4" />
             <span>Invitaciones</span>
+          </button>
+                  <button
+            type="button"
+            onClick={() => setPortalTab('security')}
+            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold font-sport uppercase tracking-wider transition col-span-2 sm:col-span-1 ${
+              portalTab === 'security'
+                ? 'bg-stadium-800 text-indigo-300 shadow border border-indigo-500/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <KeyRound className="w-4 h-4" />
+            <span>Seguridad & Clave</span>
           </button>
         </div>
 
@@ -910,13 +985,50 @@ export default function AdminPortal({
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => handleDeleteParticipant(p.id, p.display_name)}
-                        className="p-2 text-slate-500 hover:text-rose-400 transition rounded-lg hover:bg-rose-950/30"
-                        title="Dar de baja participante"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                                            <div className="flex items-center gap-1">
+                        {editingPinUserId === p.id ? (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              placeholder="PIN"
+                              value={newParticipantPin}
+                              onChange={e => setNewParticipantPin(e.target.value)}
+                              className="w-16 bg-stadium-950 border border-indigo-500/40 rounded-lg px-2 py-1 text-xs text-white outline-none font-mono"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleResetPin(p.id)}
+                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold rounded-lg font-sport"
+                            >
+                              OK
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => { setEditingPinUserId(null); setNewParticipantPin(''); }}
+                              className="px-1.5 py-1 text-slate-400 hover:text-white text-xs"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => { setEditingPinUserId(p.id); setNewParticipantPin(''); }}
+                            className="p-2 text-slate-400 hover:text-indigo-300 transition rounded-lg hover:bg-indigo-950/30"
+                            title="Cambiar PIN o contraseña de este participante"
+                          >
+                            <KeyRound className="w-4 h-4" />
+                          </button>
+                        )}
+
+                        <button
+                          onClick={() => handleDeleteParticipant(p.id, p.display_name)}
+                          className="p-2 text-slate-500 hover:text-rose-400 transition rounded-lg hover:bg-rose-950/30"
+                          title="Dar de baja participante"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -998,6 +1110,86 @@ export default function AdminPortal({
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+        {/* --- TAB 5: SEGURIDAD Y CAMBIO DE CONTRASEÑA --- */}
+        {portalTab === 'security' && (
+          <div className="max-w-md mx-auto space-y-5 animate-in fade-in duration-150">
+            <div className="bg-stadium-900 rounded-3xl p-6 border border-white/5 shadow-xl space-y-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black font-sport uppercase tracking-wider text-white">
+                    Cambiar Contraseña de Administrador
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Actualiza tu clave de acceso para proteger el portal.
+                  </p>
+                </div>
+              </div>
+
+              {passMsg && (
+                <div className={`text-xs p-3 rounded-2xl border ${
+                  passMsg.success
+                    ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                }`}>
+                  {passMsg.success || passMsg.error}
+                </div>
+              )}
+
+              <form onSubmit={handleChangePassword} className="space-y-3.5 pt-1">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                    Contraseña Actual *
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={currentPass}
+                    onChange={e => setCurrentPass(e.target.value)}
+                    className="w-full bg-stadium-950 border border-white/10 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                    Nueva Contraseña *
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={newPass}
+                    onChange={e => setNewPass(e.target.value)}
+                    className="w-full bg-stadium-950 border border-white/10 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-300 block mb-1">
+                    Confirmar Nueva Contraseña *
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    value={confirmPass}
+                    onChange={e => setConfirmPass(e.target.value)}
+                    className="w-full bg-stadium-950 border border-white/10 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none font-mono"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isChangingPass}
+                  className="w-full py-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white font-black font-sport uppercase tracking-wider text-sm transition active:scale-95 shadow-xl shadow-indigo-950/70 disabled:opacity-50 ring-1 ring-indigo-400/40 flex items-center justify-center gap-2 mt-2"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{isChangingPass ? 'Actualizando...' : 'Guardar Nueva Contraseña'}</span>
+                </button>
+              </form>
             </div>
           </div>
         )}
