@@ -3,11 +3,13 @@ import { Trophy, Calendar, TrendingUp, Users } from 'lucide-react';
 import { MedalIcon } from './SportsIcons';
 
 export default function Leaderboard({
-  standings,
+  standings = [],
   currentWeekName,
-  currentUser
+  currentUser,
+  isLoading = false
 }) {
-  const [viewType, setViewType] = useState('weekly'); // 'weekly' | 'general'
+  // Por defecto 'general' para ver el acumulado general del torneo
+  const [viewType, setViewType] = useState('general'); // 'general' | 'weekly'
 
   const isWeekly = viewType === 'weekly';
   const scoreKey = isWeekly ? 'weekly_hits' : 'total_hits';
@@ -16,33 +18,31 @@ export default function Leaderboard({
 
   // Ordenar lista según la vista
   const sortedStandings = [...standings].sort((a, b) => {
-    if (b[scoreKey] !== a[scoreKey]) {
-      return b[scoreKey] - a[scoreKey];
+    const scoreA = a[scoreKey] ?? 0;
+    const scoreB = b[scoreKey] ?? 0;
+    if (scoreB !== scoreA) {
+      return scoreB - scoreA;
     }
-    return a.display_name.localeCompare(b.display_name);
+    return (a.display_name || '').localeCompare(b.display_name || '');
   });
 
-  // Solo para vista general: medallas de oro, plata y bronce
-  const goldMedalists = !isWeekly ? sortedStandings.filter(s => s.general_medal === 'gold') : [];
-  const silverMedalists = !isWeekly ? sortedStandings.filter(s => s.general_medal === 'silver') : [];
-  const bronzeMedalists = !isWeekly ? sortedStandings.filter(s => s.general_medal === 'bronze') : [];
+  // Identificar los 3 niveles de puntuación para el podio olímpico
+  const uniqueScores = [...new Set(sortedStandings.map(s => s[scoreKey]))]
+    .filter(sc => sc !== undefined && sc !== null && sc > 0)
+    .sort((a, b) => b - a);
+
+  const goldScore = uniqueScores[0];
+  const silverScore = uniqueScores[1];
+  const bronzeScore = uniqueScores[2];
+
+  const goldMedalists = goldScore !== undefined ? sortedStandings.filter(s => s[scoreKey] === goldScore) : [];
+  const silverMedalists = silverScore !== undefined ? sortedStandings.filter(s => s[scoreKey] === silverScore) : [];
+  const bronzeMedalists = bronzeScore !== undefined ? sortedStandings.filter(s => s[scoreKey] === bronzeScore) : [];
 
   return (
     <div className="space-y-4 pb-24">
-      {/* Switcher: Esta Semana vs Tabla Acumulada General */}
+      {/* Switcher: Tabla General Acumulada vs Esta Semana */}
       <div className="flex p-1 bg-slate-200/80 dark:bg-stadium-900 rounded-2xl border border-slate-200 dark:border-white/5 shadow-inner">
-        <button
-          onClick={() => setViewType('weekly')}
-          className={`flex-1 py-2.5 rounded-xl text-xs font-bold font-sport uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
-            isWeekly
-              ? 'bg-white dark:bg-stadium-800 text-emerald-700 dark:text-turf-400 shadow-sm border border-slate-200 dark:border-white/10'
-              : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
-          }`}
-        >
-          <Calendar className="w-3.5 h-3.5" />
-          <span>{currentWeekName || 'Esta Jornada'}</span>
-        </button>
-
         <button
           onClick={() => setViewType('general')}
           className={`flex-1 py-2.5 rounded-xl text-xs font-bold font-sport uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
@@ -53,6 +53,18 @@ export default function Leaderboard({
         >
           <TrendingUp className="w-3.5 h-3.5" />
           <span>Tabla General Acumulada</span>
+        </button>
+
+        <button
+          onClick={() => setViewType('weekly')}
+          className={`flex-1 py-2.5 rounded-xl text-xs font-bold font-sport uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all ${
+            isWeekly
+              ? 'bg-white dark:bg-stadium-800 text-emerald-700 dark:text-turf-400 shadow-sm border border-slate-200 dark:border-white/10'
+              : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
+          }`}
+        >
+          <Calendar className="w-3.5 h-3.5" />
+          <span>{currentWeekName || 'Esta Jornada'}</span>
         </button>
       </div>
 
@@ -136,13 +148,18 @@ export default function Leaderboard({
           <div className="flex items-center gap-2">
             <Trophy className={`w-4 h-4 ${isWeekly ? 'text-emerald-600 dark:text-turf-400' : 'text-indigo-600 dark:text-indigo-400'}`} />
             <h3 className="text-xs font-black font-sport uppercase tracking-wider text-slate-800 dark:text-slate-200">
-              {isWeekly ? `Posiciones ${currentWeekName || 'de la Semana'}` : 'Clasificación General'}
+              {isWeekly ? `Posiciones ${currentWeekName || 'de la Jornada'}` : 'Clasificación General'}
             </h3>
           </div>
           <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400 font-medium">1 acierto = 1 pt</span>
         </div>
 
-        {sortedStandings.length === 0 ? (
+        {isLoading ? (
+          <div className="p-10 text-center text-xs text-slate-500 space-y-3">
+            <div className="w-7 h-7 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="font-semibold text-slate-700 dark:text-slate-300">Cargando posiciones oficiales...</p>
+          </div>
+        ) : sortedStandings.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-500 space-y-1">
             <Users className="w-6 h-6 mx-auto mb-2 text-slate-400 dark:text-slate-600" />
             <p className="font-semibold text-slate-700 dark:text-slate-400">Aún no hay participantes en esta quiniela.</p>
@@ -150,13 +167,19 @@ export default function Leaderboard({
           </div>
         ) : (
           <div className="divide-y divide-slate-100 dark:divide-white/5">
-            {sortedStandings.map((user) => {
-              const rank = user[rankKey];
-              const medal = !isWeekly ? user.general_medal : null;
-              const hits = user[scoreKey];
-              const total = user[totalKey];
+            {sortedStandings.map((user, idx) => {
+              const rank = user[rankKey] || idx + 1;
+              const medal = !isWeekly ? (
+                user[scoreKey] === goldScore && goldScore > 0 ? 'gold' :
+                user[scoreKey] === silverScore && silverScore > 0 ? 'silver' :
+                user[scoreKey] === bronzeScore && bronzeScore > 0 ? 'bronze' : null
+              ) : null;
+
+              const hits = user[scoreKey] ?? 0;
+              const total = user[totalKey] ?? 0;
               const isMe = user.user_id === currentUser?.id;
-              const pct = total > 0 ? Math.round((hits / total) * 100) : 0;
+              const hasPicks = total > 0 && total >= hits;
+              const pct = hasPicks ? Math.round((hits / total) * 100) : null;
 
               let medalBadge = null;
               let rowThemeClass = 'bg-transparent hover:bg-slate-50 dark:hover:bg-white/[0.02] text-slate-800 dark:text-slate-300';
@@ -195,7 +218,7 @@ export default function Leaderboard({
                       className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-black text-white shadow-sm flex-shrink-0"
                       style={{ backgroundColor: user.avatar_color || '#3B82F6' }}
                     >
-                      {user.display_name[0].toUpperCase()}
+                      {(user.display_name || 'U')[0].toUpperCase()}
                     </div>
 
                     <div>
@@ -210,7 +233,9 @@ export default function Leaderboard({
                         )}
                       </div>
                       <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
-                        {hits}/{total} aciertos ({pct}%)
+                        {hasPicks
+                          ? `${hits}/${total} aciertos (${pct}%)`
+                          : `${hits} pts acumulados`}
                       </span>
                     </div>
                   </div>

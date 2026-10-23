@@ -233,7 +233,14 @@ export default function App() {
     setIsLoading(true);
 
     const pool = pools.find(p => p.tournament?.league?.code === leagueCode);
-    if (pool) setSelectedPool(pool);
+    if (pool) {
+      setSelectedPool(pool);
+      api.getPoolStandings(pool.id).then(data => {
+        if (data?.standings) {
+          setStandings(data.standings);
+        }
+      }).catch(() => {});
+    }
   };
 
   const handleSelectWeek = (w) => {
@@ -379,6 +386,7 @@ export default function App() {
             standings={standings}
             currentWeekName={selectedWeek?.name}
             currentUser={currentUser}
+            isLoading={isLoading}
           />
         )}
 
