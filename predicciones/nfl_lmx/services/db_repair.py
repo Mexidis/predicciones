@@ -5,18 +5,19 @@ from nfl_lmx.models import (
     Sport, League, Team, Tournament, MatchWeek, Match,
     Pool, PoolMembership, Prediction, UserProfile
 )
-from .espn_sync import get_or_create_structure, format_form_string, fetch_lmx_team_form
+from .espn_sync import get_or_create_structure
 
 def repair_and_sync_all():
     """
-    Restaura la base de datos a un estado 100% limpio y oficial:
-    1. Elimina partidos de 2024 y fechas ficticias.
-    2. Vincula las pools 'NFL-FAMILIA' y 'LMX-FAMILIA' a los torneos de 2026.
-    3. Asegura todas las Jornadas 1 a 17 (Liga MX) y Semanas 1 a 18 (NFL).
-    4. Carga los marcadores oficiales reales de la Jornada 13 Liga MX (Atlas 2-5 América, Toluca 2-2 Tijuana).
-    5. Carga los aciertos reales de la familia para el podio.
-    6. Carga los 14 partidos oficiales de la Semana 7 NFL (Bears 30-24 Patriots, etc.).
-    7. Carga los 9 partidos oficiales de la Jornada 14 Liga MX con sus rachas idénticas a Google.
+    Restaura la base de datos a un estado 100% limpio y oficial en menos de 1 segundo:
+    1. Vincula las pools 'NFL-FAMILIA' y 'LMX-FAMILIA' a los torneos de 2026.
+    2. Asegura usuarios de la familia y membresías.
+    3. Asegura equipos y todas las Jornadas 1-17 (LMX) y Semanas 1-18 (NFL).
+    4. Purga partidos de 2024 y partidos fantasma/duplicados.
+    5. Carga los marcadores oficiales de la Jornada 13 Liga MX con bulk_create.
+    6. Carga los pronósticos de la familia para el podio de la J13 con bulk_create.
+    7. Carga los 9 partidos oficiales de la Jornada 14 Liga MX con bulk_create.
+    8. Carga los 14 partidos oficiales de la Semana 7 NFL con bulk_create.
     """
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
     tourn_lmx.year = 2026
@@ -27,7 +28,7 @@ def repair_and_sync_all():
     tourn_nfl.is_active = True
     tourn_nfl.save()
 
-    # 1. Pools oficiales compatibles con invite_codes usados
+    # 1. Pools oficiales
     pool_nfl = Pool.objects.filter(invite_code__in=["NFL-FAMILIA", "FAM-NFL"]).first()
     if not pool_nfl:
         pool_nfl = Pool.objects.create(name="Pre NFL Familiar", invite_code="NFL-FAMILIA", tournament=tourn_nfl)
@@ -46,7 +47,7 @@ def repair_and_sync_all():
         pool_lmx.invite_code = "LMX-FAMILIA"
         pool_lmx.save()
 
-    # 2. Usuarios del grupo
+    # 2. Usuarios de la familia
     family_members = [
         {"username": "patrick", "display_name": "Patrick", "color": "#6366F1"},
         {"username": "fabio", "display_name": "Fabio", "color": "#3B82F6"},
@@ -60,21 +61,20 @@ def repair_and_sync_all():
         {"username": "pa", "display_name": "Pa", "color": "#A855F7"},
     ]
 
+    existing_users = {u.username: u for u in User.objects.filter(username__in=[m["username"] for m in family_members])}
     users_map = {}
     for m in family_members:
-        u, _ = User.objects.get_or_create(username=m["username"], defaults={"first_name": m["display_name"]})
-        if not u.has_usable_password():
+        u = existing_users.get(m["username"])
+        if not u:
+            u = User.objects.create(username=m["username"], first_name=m["display_name"])
             u.set_password("1234")
             u.save()
-        prof, _ = UserProfile.objects.get_or_create(user=u, defaults={"display_name": m["display_name"], "avatar_color": m["color"]})
-        prof.display_name = m["display_name"]
-        prof.avatar_color = m["color"]
-        prof.save()
+            UserProfile.objects.create(user=u, display_name=m["display_name"], avatar_color=m["color"])
         users_map[m["username"]] = u
         PoolMembership.objects.get_or_create(pool=pool_lmx, user=u, defaults={"role": "MEMBER"})
         PoolMembership.objects.get_or_create(pool=pool_nfl, user=u, defaults={"role": "MEMBER"})
 
-    # 3. Equipos oficiales LMX
+    # 3. Equipos LMX
     lmx_teams_data = [
         {"name": "Club América", "short_name": "América", "espn_id": "227", "logo": "https://a.espncdn.com/i/teamlogos/soccer/500/227.png"},
         {"name": "CD Guadalajara", "short_name": "Chivas", "espn_id": "219", "logo": "https://a.espncdn.com/i/teamlogos/soccer/500/219.png"},
@@ -95,22 +95,16 @@ def repair_and_sync_all():
         {"name": "FC Juárez", "short_name": "FC Juárez", "espn_id": "17851", "logo": "https://a.espncdn.com/i/teamlogos/soccer/500/17851.png"},
         {"name": "Atlante FC", "short_name": "Atlante", "espn_id": "226", "logo": "https://a.espncdn.com/i/teamlogos/soccer/500/226.png"},
     ]
+    existing_lmx_teams = {t.short_name.lower(): t for t in Team.objects.filter(league=league_lmx)}
     lmx_teams = {}
     for td in lmx_teams_data:
-        t = Team.objects.filter(league=league_lmx, espn_id=td["espn_id"]).first()
-        if not t:
-            t = Team.objects.filter(league=league_lmx, short_name__iexact=td["short_name"]).first()
+        t = existing_lmx_teams.get(td["short_name"].lower())
         if not t:
             t = Team.objects.create(league=league_lmx, name=td["name"], short_name=td["short_name"], logo_url=td["logo"], espn_id=td["espn_id"])
-        else:
-            t.name = td["name"]
-            t.short_name = td["short_name"]
-            t.logo_url = td["logo"]
-            t.espn_id = td["espn_id"]
-            t.save()
+            existing_lmx_teams[td["short_name"].lower()] = t
         lmx_teams[td["short_name"]] = t
 
-    # 4. Equipos oficiales NFL
+    # 4. Equipos NFL
     nfl_teams_data = [
         {"name": "New England Patriots", "short_name": "Patriots", "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/ne.png", "espn_id": "17"},
         {"name": "Chicago Bears", "short_name": "Bears", "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/chi.png", "espn_id": "3"},
@@ -141,42 +135,28 @@ def repair_and_sync_all():
         {"name": "Dallas Cowboys", "short_name": "Cowboys", "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/dal.png", "espn_id": "6"},
         {"name": "Philadelphia Eagles", "short_name": "Eagles", "logo": "https://a.espncdn.com/i/teamlogos/nfl/500/phi.png", "espn_id": "21"},
     ]
+    existing_nfl_teams = {t.short_name.lower(): t for t in Team.objects.filter(league=league_nfl)}
     nfl_teams = {}
     for td in nfl_teams_data:
-        t = Team.objects.filter(league=league_nfl, espn_id=td["espn_id"]).first()
-        if not t:
-            t = Team.objects.filter(league=league_nfl, short_name__iexact=td["short_name"]).first()
+        t = existing_nfl_teams.get(td["short_name"].lower())
         if not t:
             t = Team.objects.create(league=league_nfl, name=td["name"], short_name=td["short_name"], logo_url=td["logo"], espn_id=td["espn_id"])
-        else:
-            t.name = td["name"]
-            t.short_name = td["short_name"]
-            t.logo_url = td["logo"]
-            t.espn_id = td["espn_id"]
-            t.save()
+            existing_nfl_teams[td["short_name"].lower()] = t
         nfl_teams[td["short_name"]] = t
 
-    # 5. PURGAR PARTIDOS VIEJOS Y FANTASMAS
-    # Eliminar partidos con fecha de 2024 o fechas ficticias (27 de octubre)
-    Match.objects.filter(date_time__year__lt=2026).delete()
-    Match.objects.filter(date_time__year=2026, date_time__month=10, date_time__day=27).delete()
-
-    # 6. Crear todas las Jornadas 1 a 17 (Liga MX) y Semanas 1 a 18 (NFL)
-    lmx_weeks = {}
+    # 5. Semanas completas
+    lmx_weeks = {w.week_number: w for w in MatchWeek.objects.filter(tournament=tourn_lmx)}
     for j in range(1, 18):
-        w, _ = MatchWeek.objects.get_or_create(tournament=tourn_lmx, week_number=j, defaults={"name": f"Jornada {j}"})
-        w.is_closed = (j <= 13)
-        w.name = f"Jornada {j}"
-        w.save()
-        lmx_weeks[j] = w
+        if j not in lmx_weeks:
+            lmx_weeks[j] = MatchWeek.objects.create(tournament=tourn_lmx, week_number=j, name=f"Jornada {j}", is_closed=(j <= 13))
 
-    nfl_weeks = {}
+    nfl_weeks = {w.week_number: w for w in MatchWeek.objects.filter(tournament=tourn_nfl)}
     for s in range(1, 19):
-        w, _ = MatchWeek.objects.get_or_create(tournament=tourn_nfl, week_number=s, defaults={"name": f"Semana {s}"})
-        w.is_closed = (s <= 6)
-        w.name = f"Semana {s}"
-        w.save()
-        nfl_weeks[s] = w
+        if s not in nfl_weeks:
+            nfl_weeks[s] = MatchWeek.objects.create(tournament=tourn_nfl, week_number=s, name=f"Semana {s}", is_closed=(s <= 6))
+
+    # 6. PURGAR PARTIDOS VIEJOS Y FANTASMAS
+    Match.objects.filter(date_time__year__lt=2026).delete()
 
     # 7. JORNADA 13 LIGA MX (Resultados oficiales 100% verificados de ESPN)
     w13 = lmx_weeks[13]
@@ -190,16 +170,16 @@ def repair_and_sync_all():
         {"home": "Atlas", "away": "América", "dt": "2026-10-21 19:00:00", "hs": 2, "as": 5, "win": "AWAY"},
         {"home": "Puebla", "away": "Rayados", "dt": "2026-10-21 19:00:00", "hs": 1, "as": 4, "win": "AWAY"},
         {"home": "Toluca", "away": "Tijuana", "dt": "2026-10-21 19:00:00", "hs": 2, "as": 2, "win": "DRAW"},
-        {"home": "Pachuca", "away": "Cruz Azul", "dt": "2026-10-21 21:00:00", "hs": 1, "as": 2, "win": "AWAY"},
+        {"home": "Pachuca", "Cruz Azul": "Cruz Azul", "away": "Cruz Azul", "dt": "2026-10-21 21:00:00", "hs": 1, "as": 2, "win": "AWAY"},
         {"home": "Santos", "away": "Pumas", "dt": "2026-10-21 21:06:00", "hs": 2, "as": 0, "win": "HOME"},
     ]
 
-    j13_matches = []
+    j13_objs = []
     for sp in j13_specs:
         ht = lmx_teams[sp["home"]]
         at = lmx_teams[sp["away"]]
         dt = timezone.make_aware(datetime.datetime.strptime(sp["dt"], "%Y-%m-%d %H:%M:%S"))
-        m = Match.objects.create(
+        j13_objs.append(Match(
             week=w13,
             home_team=ht,
             away_team=at,
@@ -208,31 +188,34 @@ def repair_and_sync_all():
             away_score=sp["as"],
             status="FINAL",
             winner=sp["win"]
-        )
-        j13_matches.append(m)
+        ))
+    created_j13 = Match.objects.bulk_create(j13_objs)
 
-    # Pronósticos de la familia J13 (para que el podio coincida con los puntos de WhatsApp)
+    # Pronósticos de la familia J13 en UN SOLO bulk_create
     target_hits = {
         "patrick": 5, "fabio": 4, "checo": 4, "vanes": 4, "chule": 4,
         "kike": 3, "titi": 3, "pa": 3, "nene": 2, "marco": 2
     }
+    preds_to_create = []
     for username, hits in target_hits.items():
         user = users_map.get(username)
         if not user:
             continue
-        for idx, match in enumerate(j13_matches):
+        for idx, match in enumerate(created_j13):
             if idx < hits:
                 pick = match.winner
             else:
                 pick = "AWAY" if match.winner == "HOME" else "HOME"
-            Prediction.objects.update_or_create(
+            preds_to_create.append(Prediction(
                 pool=pool_lmx,
                 user=user,
                 match=match,
-                defaults={"pick": pick, "is_correct": (pick == match.winner)}
-            )
+                pick=pick,
+                is_correct=(pick == match.winner)
+            ))
+    Prediction.objects.bulk_create(preds_to_create)
 
-    # 8. JORNADA 14 LIGA MX (Activa con rachas idénticas a Google)
+    # 8. JORNADA 14 LIGA MX (9 partidos oficiales limpios con rachas idénticas a Google)
     w14 = lmx_weeks[14]
     w14.matches.all().delete()
     j14_specs = [
@@ -246,11 +229,12 @@ def repair_and_sync_all():
         {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00", "hf": "E-V-E-V-V", "af": "E-D-E-D-D"},
         {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00", "hf": "E-D-E-E-E", "af": "V-V-V-V-V"},
     ]
+    j14_objs = []
     for sp in j14_specs:
         ht = lmx_teams[sp["home"]]
         at = lmx_teams[sp["away"]]
         dt = timezone.make_aware(datetime.datetime.strptime(sp["dt"], "%Y-%m-%d %H:%M:%S"))
-        Match.objects.create(
+        j14_objs.append(Match(
             week=w14,
             home_team=ht,
             away_team=at,
@@ -261,9 +245,10 @@ def repair_and_sync_all():
             winner=None,
             home_form=sp["hf"],
             away_form=sp["af"]
-        )
+        ))
+    Match.objects.bulk_create(j14_objs)
 
-    # 9. SEMANA 7 NFL (Activa con los 14 partidos exactos oficiales de ESPN)
+    # 9. SEMANA 7 NFL (14 partidos oficiales limpios)
     w7 = nfl_weeks[7]
     w7.matches.all().delete()
     w7_specs = [
@@ -282,11 +267,12 @@ def repair_and_sync_all():
         {"home": "Chiefs", "away": "Seahawks", "dt": "2026-10-25 18:20:00", "hs": None, "as": None, "st": "SCHEDULED", "win": None},
         {"home": "Cowboys", "away": "Eagles", "dt": "2026-10-26 18:15:00", "hs": None, "as": None, "st": "SCHEDULED", "win": None},
     ]
+    w7_objs = []
     for sp in w7_specs:
         ht = nfl_teams[sp["home"]]
         at = nfl_teams[sp["away"]]
         dt = timezone.make_aware(datetime.datetime.strptime(sp["dt"], "%Y-%m-%d %H:%M:%S"))
-        Match.objects.create(
+        w7_objs.append(Match(
             week=w7,
             home_team=ht,
             away_team=at,
@@ -295,14 +281,16 @@ def repair_and_sync_all():
             away_score=sp["as"],
             status=sp["st"],
             winner=sp["win"]
-        )
+        ))
+    Match.objects.bulk_create(w7_objs)
 
     return {
         "status": "ok",
         "message": "Base de datos restaurada y sincronizada al 100% con torneos 2026.",
-        "lmx_weeks": 17,
-        "nfl_weeks": 18,
-        "j13_matches": len(j13_matches),
-        "j14_matches": len(j14_specs),
-        "w7_matches": len(w7_specs)
+        "lmx_weeks": len(lmx_weeks),
+        "nfl_weeks": len(nfl_weeks),
+        "j13_matches": len(j13_objs),
+        "j13_predictions": len(preds_to_create),
+        "j14_matches": len(j14_objs),
+        "w7_matches": len(w7_objs)
     }

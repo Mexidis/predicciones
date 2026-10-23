@@ -662,5 +662,13 @@ def api_admin_repair_database(request):
     Restaura la base de datos a los torneos 2026, elimina partidos de 2024
     y sincroniza Jornadas y Semanas oficiales.
     """
-    res = repair_and_sync_all()
-    return Response(res)
+    try:
+        res = repair_and_sync_all()
+        return Response(res)
+    except Exception as e:
+        import traceback
+        return Response({
+            'status': 'error',
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
