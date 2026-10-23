@@ -133,6 +133,7 @@ class PoolMembership(models.Model):
     pool = models.ForeignKey(Pool, on_delete=models.CASCADE, related_name='memberships')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pool_memberships')
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='MEMBER')
+    manual_points = models.IntegerField(default=0, help_text="Ajuste manual de puntos directos para el leaderboard")
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

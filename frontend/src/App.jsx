@@ -10,13 +10,21 @@ import { Target, Trophy, Eye, Calendar, Sparkles } from 'lucide-react';
 
 export default function App() {
   const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('quinielas_theme') || 'dark';
+    return localStorage.getItem('quiniela_theme') || 'dark';
   });
 
   const [viewMode, setViewMode] = useState('app'); // 'app' | 'admin_portal'
   const [currentLeague, setCurrentLeague] = useState('NFL'); // 'NFL' | 'LMX'
   const [users, setUsers] = useState([]);
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('quiniela_user_session');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const [pools, setPools] = useState([]);
   const [selectedPool, setSelectedPool] = useState(null);
   const [weeks, setWeeks] = useState([]);
@@ -42,7 +50,7 @@ export default function App() {
       root.classList.remove('dark');
       root.classList.add('light');
     }
-    localStorage.setItem('quinielas_theme', theme);
+    localStorage.setItem('quiniela_theme', theme);
   }, [theme]);
 
   const toggleTheme = () => {
@@ -80,10 +88,13 @@ export default function App() {
     const data = await api.getUsers();
     if (data && data.length > 0) {
       setUsers(data);
-      if (!currentUser) {
-        const patrickUser = data.find(u => u.username === 'patrick');
-        const firstParticipant = patrickUser || data.find(u => u.username !== 'admin') || null;
-        if (firstParticipant) setCurrentUser(firstParticipant);
+      // Si ya hay un usuario guardado en sesión local, actualizar sus datos
+      if (currentUser) {
+        const refreshed = data.find(u => u.id === currentUser.id || u.username === currentUser.username);
+        if (refreshed) {
+          setCurrentUser(refreshed);
+          localStorage.setItem('quiniela_user_session', JSON.stringify(refreshed));
+        }
       }
     }
   };
@@ -176,7 +187,7 @@ export default function App() {
   const handleSavePick = async (matchId, pickValue) => {
     if (!currentUser) {
       setIsJoinModalOpen(true);
-      showToast('Ingresa tu nombre para guardar tus picks');
+      showToast('Inicia sesión con tu PIN para registrar tus pronósticos');
       return;
     }
     if (!selectedPool) return;
@@ -233,9 +244,19 @@ export default function App() {
   };
 
   const handleUserRegistered = (newUser) => {
-    setUsers(prev => [...prev, newUser]);
+    setUsers(prev => {
+      const exists = prev.some(u => u.id === newUser.id);
+      return exists ? prev.map(u => u.id === newUser.id ? newUser : u) : [...prev, newUser];
+    });
     setCurrentUser(newUser);
-    showToast(`¡Bienvenido al grupo, ${newUser.display_name}!`);
+    localStorage.setItem('quiniela_user_session', JSON.stringify(newUser));
+    showToast(`¡Hola, ${newUser.display_name}! Sesión iniciada.`);
+  };
+
+  const handleUserLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('quiniela_user_session');
+    showToast('Sesión cerrada');
   };
 
   // Si está en el portal de administración protegido
@@ -248,7 +269,6 @@ export default function App() {
         }}
         currentLeague={currentLeague}
         pools={pools}
-        weeks={weeks}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
@@ -270,10 +290,9 @@ export default function App() {
         onSelectLeague={handleLeagueChange}
         selectedPool={selectedPool}
         currentUser={currentUser}
-        users={users}
-        onSwitchUser={setCurrentUser}
         onOpenJoinModal={() => setIsJoinModalOpen(true)}
         onOpenAdminPortal={() => setViewMode('admin_portal')}
+        onLogout={handleUserLogout}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
@@ -372,12 +391,13 @@ export default function App() {
         )}
       </main>
 
-      {/* Join / Quick Register Modal */}
+      {/* Join / Quick Login Modal */}
       <JoinModal
         isOpen={isJoinModalOpen}
         onClose={() => setIsJoinModalOpen(false)}
         defaultInviteCode={urlInviteCode || selectedPool?.invite_code}
         onUserRegistered={handleUserRegistered}
+        users={users}
       />
     </div>
   );

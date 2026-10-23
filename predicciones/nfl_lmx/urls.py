@@ -36,4 +36,6 @@ urlpatterns = [
     path('admin-portal/change-password/', views.api_admin_change_password, name='api_admin_change_password'),
     path('admin-portal/participants/<int:user_id>/reset-pin/', views.api_admin_reset_participant_pin, name='api_admin_reset_participant_pin'),
     path('admin-portal/repair-database/', views.api_admin_repair_database, name='api_admin_repair_database'),
+    path('admin-portal/points/', views.api_admin_pool_points, name='api_admin_pool_points'),
+    path('admin-portal/points/bulk-save/', views.api_admin_pool_points, name='api_admin_save_pool_points'),
 ]

@@ -194,4 +194,21 @@ export const api = {
     });
     return await res.json();
   },
+
+  async adminGetPoolPoints(poolId) {
+    try {
+      const res = await fetch(API_BASE + '/admin-portal/points/?pool_id=' + poolId);
+      if (res.ok) return await res.json();
+    } catch (e) {}
+    return { participants: [] };
+  },
+
+  async adminSavePoolPoints(poolId, points) {
+    const res = await fetch(API_BASE + '/admin-portal/points/bulk-save/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pool_id: poolId, points })
+    });
+    return await res.json();
+  }
 };

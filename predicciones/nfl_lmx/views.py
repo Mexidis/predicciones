@@ -217,7 +217,9 @@ def calculate_standings_with_medals(pool, memberships, week_id=None):
         stats = user_stats.get(user.id, {})
         weekly_hits = stats.get('weekly_hits', 0) if week_id else 0
         weekly_total = stats.get('weekly_total', 0) if week_id else 0
-        total_hits = stats.get('total_hits', 0)
+        calculated_hits = stats.get('total_hits', 0)
+        manual_pts = getattr(mem, 'manual_points', 0) or 0
+        total_hits = max(calculated_hits, manual_pts)
         total_picks = stats.get('total_picks', 0)
 
         standings.append({
@@ -228,6 +230,8 @@ def calculate_standings_with_medals(pool, memberships, week_id=None):
             'role': mem.role,
             'weekly_hits': weekly_hits,
             'weekly_total': weekly_total,
+            'calculated_hits': calculated_hits,
+            'manual_points': manual_pts,
             'total_hits': total_hits,
             'total_picks': total_picks,
         })
@@ -672,3 +676,69 @@ def api_admin_repair_database(request):
             'error': str(e),
             'traceback': traceback.format_exc()
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET', 'POST'])
+def api_admin_pool_points(request):
+    """
+    Permite al administrador consultar y ajustar directamente los puntos actuales
+    acumulados de cada participante por torneo/pool para reflejar la realidad del leaderboard al instante.
+    """
+    if request.method == 'GET':
+        pool_id = request.query_params.get('pool_id')
+        if not pool_id:
+            return Response({'error': 'pool_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            pool = Pool.objects.get(id=pool_id)
+        except Pool.DoesNotExist:
+            return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+        memberships = pool.memberships.select_related('user__profile').all()
+        user_hits = dict(
+            Prediction.objects.filter(pool=pool, is_correct=True)
+            .values('user_id')
+            .annotate(hits=Count('id'))
+            .values_list('user_id', 'hits')
+        )
+        data = []
+        for mem in memberships:
+            u = mem.user
+            disp = u.profile.display_name if hasattr(u, 'profile') else u.first_name or u.username
+            color = u.profile.avatar_color if hasattr(u, 'profile') else '#3B82F6'
+            calc = user_hits.get(u.id, 0)
+            man = mem.manual_points or 0
+            data.append({
+                'membership_id': mem.id,
+                'user_id': u.id,
+                'username': u.username,
+                'display_name': disp,
+                'avatar_color': color,
+                'calculated_hits': calc,
+                'manual_points': man,
+                'effective_total': max(calc, man),
+            })
+        data.sort(key=lambda x: x['effective_total'], reverse=True)
+        return Response({'pool_id': pool.id, 'pool_name': pool.name, 'participants': data})
+
+    elif request.method == 'POST':
+        pool_id = request.data.get('pool_id')
+        points_list = request.data.get('points', [])
+        if not pool_id:
+            return Response({'error': 'pool_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+        updated_count = 0
+        for item in points_list:
+            u_id = item.get('user_id')
+            pts = item.get('manual_points')
+            if u_id is not None and pts is not None:
+                try:
+                    pts_int = max(0, int(pts))
+                    PoolMembership.objects.filter(pool_id=pool_id, user_id=u_id).update(manual_points=pts_int)
+                    updated_count += 1
+                except (ValueError, TypeError):
+                    continue
+
+        return Response({
+            'success': True,
+            'message': f'Se actualizaron los puntos de {updated_count} participantes con éxito.',
+            'updated_count': updated_count
+        })
