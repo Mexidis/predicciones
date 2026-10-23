@@ -77,8 +77,22 @@ export default function TapToPick({
       </div>
 
       {/* Match Cards List */}
-      <div className="space-y-3.5">
-        {matches.map((m) => {
+      {isLoading ? (
+        <div className="p-8 bg-[#0D1024] rounded-3xl border border-indigo-500/20 text-center space-y-3 shadow-xl">
+          <div className="w-8 h-8 mx-auto border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-xs font-bold font-sport uppercase tracking-wider text-indigo-300">
+            Cargando partidos de {currentLeague === 'NFL' ? 'la NFL' : 'la Liga MX'}...
+          </p>
+        </div>
+      ) : matches.length === 0 ? (
+        <div className="p-8 text-center bg-[#0D1024] rounded-3xl border border-indigo-500/20 shadow-xl">
+          <p className="text-xs text-slate-400 font-sport uppercase tracking-wider">
+            No hay partidos disponibles para esta jornada.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3.5">
+          {matches.map((m) => {
           const currentPick = userPicks[m.id]?.pick;
           const isCorrect = userPicks[m.id]?.is_correct;
           const isFinal = m.status === 'FINAL';
@@ -286,6 +300,7 @@ export default function TapToPick({
           );
         })}
       </div>
+      )}
     </div>
   );
 }

@@ -59,9 +59,10 @@ export default function App() {
     const data = await api.getUsers();
     if (data && data.length > 0) {
       setUsers(data);
-      // Si no hay usuario seleccionado, elegir el primero (excepto admin)
+      // Si no hay usuario seleccionado, elegir el primero (priorizar patrick o el primer no admin)
       if (!currentUser) {
-        const firstParticipant = data.find(u => u.username !== 'admin') || null;
+        const patrickUser = data.find(u => u.username === 'patrick');
+        const firstParticipant = patrickUser || data.find(u => u.username !== 'admin') || null;
         if (firstParticipant) setCurrentUser(firstParticipant);
       }
     }
@@ -84,11 +85,16 @@ export default function App() {
     loadPools();
   }, [currentLeague]);
 
-  // 4. Cargar Semanas del Torneo
+  // 4. Cargar Semanas del Torneo (con guardia contra condiciones de carrera)
   useEffect(() => {
+    let active = true;
     async function loadWeeks() {
       if (!selectedPool?.tournament?.id) return;
+      if (selectedPool.tournament?.league?.code !== currentLeague) return;
+
       const data = await api.getWeeks(selectedPool.tournament.id);
+      if (!active) return;
+
       if (data && data.length > 0) {
         setWeeks(data);
         // Seleccionar la jornada actual/abierta por defecto (o la más reciente)
@@ -97,43 +103,53 @@ export default function App() {
       }
     }
     loadWeeks();
-  }, [selectedPool]);
+    return () => { active = false; };
+  }, [selectedPool, currentLeague]);
 
   // 5. Cargar Partidos y Tabla de Posiciones
-  const loadWeekData = async () => {
-    if (!selectedWeek?.id || !selectedPool?.id) return;
-    setIsLoading(true);
-
-    try {
-      // Cargar Partidos
-      const matchesData = await api.getMatches(selectedWeek.id, currentUser?.id, selectedPool.id);
-      if (matchesData) {
-        setMatches(matchesData);
-        const picksMap = {};
-        matchesData.forEach(m => {
-          if (m.user_pick) {
-            picksMap[m.id] = m.user_pick;
-          }
-        });
-        setUserPicks(picksMap);
-      }
-
-      // Cargar Posiciones
-      const standingsData = await api.getPoolStandings(selectedPool.id, selectedWeek.id);
-      if (standingsData) {
-        setStandings(standingsData.standings || []);
-        setMatchesBreakdown(standingsData.matches_breakdown || []);
-      }
-    } catch (err) {
-      console.error("Error al cargar datos", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
+    let active = true;
+    const loadWeekData = async () => {
+      if (!selectedWeek?.id || !selectedPool?.id) return;
+      // Prevenir condición de carrera: no cargar si el pool o la semana no corresponden a la liga activa
+      if (selectedPool.tournament?.league?.code !== currentLeague) return;
+      if (selectedWeek.tournament && selectedWeek.tournament !== selectedPool.tournament.id) return;
+
+      setIsLoading(true);
+
+      try {
+        const [matchesData, standingsData] = await Promise.all([
+          api.getMatches(selectedWeek.id, currentUser?.id, selectedPool.id),
+          api.getPoolStandings(selectedPool.id, selectedWeek.id)
+        ]);
+
+        if (!active) return;
+
+        if (matchesData) {
+          setMatches(matchesData);
+          const picksMap = {};
+          matchesData.forEach(m => {
+            if (m.user_pick) {
+              picksMap[m.id] = m.user_pick;
+            }
+          });
+          setUserPicks(picksMap);
+        }
+
+        if (standingsData) {
+          setStandings(standingsData.standings || []);
+          setMatchesBreakdown(standingsData.matches_breakdown || []);
+        }
+      } catch (err) {
+        if (active) console.error("Error al cargar datos", err);
+      } finally {
+        if (active) setIsLoading(false);
+      }
+    };
+
     loadWeekData();
-  }, [selectedWeek, selectedPool, currentUser]);
+    return () => { active = false; };
+  }, [selectedWeek, selectedPool, currentUser, currentLeague]);
 
   // Guardar Pick con feedback táctil inmediato
   const handleSavePick = async (matchId, pickValue) => {
@@ -161,7 +177,13 @@ export default function App() {
       } else {
         showToast('✅ Pick guardado');
         // Actualizar tabla en segundo plano
-        loadWeekData();
+        if (selectedPool?.id && selectedWeek?.id) {
+          const standingsData = await api.getPoolStandings(selectedPool.id, selectedWeek.id);
+          if (standingsData) {
+            setStandings(standingsData.standings || []);
+            setMatchesBreakdown(standingsData.matches_breakdown || []);
+          }
+        }
       }
     } catch {
       showToast('⚠️ No se pudo guardar');
@@ -169,16 +191,32 @@ export default function App() {
   };
 
   const handleLeagueChange = (leagueCode) => {
+    if (leagueCode === currentLeague) return;
     setCurrentLeague(leagueCode);
+    // Limpiar inmediatamente estado de partidos para evitar cualquier parpadeo de la liga anterior
+    setMatches([]);
+    setWeeks([]);
+    setSelectedWeek(null);
+    setStandings([]);
+    setMatchesBreakdown([]);
+    setUserPicks({});
+    setIsLoading(true);
+
     const pool = pools.find(p => p.tournament?.league?.code === leagueCode);
     if (pool) setSelectedPool(pool);
+  };
+
+  const handleSelectWeek = (w) => {
+    if (selectedWeek?.id === w.id) return;
+    setMatches([]);
+    setIsLoading(true);
+    setSelectedWeek(w);
   };
 
   const handleUserRegistered = (newUser) => {
     setUsers(prev => [...prev, newUser]);
     setCurrentUser(newUser);
     showToast(`¡Bienvenido al grupo, ${newUser.display_name}!`);
-    loadWeekData();
   };
 
   // Si está en el portal de administración protegido
@@ -187,7 +225,6 @@ export default function App() {
       <AdminPortal
         onBackToApp={() => {
           setViewMode('app');
-          loadWeekData();
           loadUsersList();
         }}
         currentLeague={currentLeague}
@@ -230,7 +267,7 @@ export default function App() {
             {weeks.map(w => (
               <button
                 key={w.id}
-                onClick={() => setSelectedWeek(w)}
+                onClick={() => handleSelectWeek(w)}
                 className={`px-4 py-1.5 rounded-xl text-xs font-black font-sport uppercase tracking-wider transition-all flex-shrink-0 active:scale-95 ${
                   selectedWeek?.id === w.id
                     ? 'bg-gradient-to-r from-indigo-600 via-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-950/70 ring-1 ring-indigo-400/60'

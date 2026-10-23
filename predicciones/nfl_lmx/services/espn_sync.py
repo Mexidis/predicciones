@@ -30,7 +30,7 @@ def get_or_create_structure():
         }
     )
 
-    tourn_lmx = Tournament.objects.filter(league=league_lmx).first()
+    tourn_lmx = Tournament.objects.filter(league=league_lmx, is_active=True).order_by('-year').first()
     if not tourn_lmx:
         tourn_lmx = Tournament.objects.create(
             league=league_lmx,
@@ -39,12 +39,12 @@ def get_or_create_structure():
             is_active=True
         )
 
-    tourn_nfl = Tournament.objects.filter(league=league_nfl).first()
+    tourn_nfl = Tournament.objects.filter(league=league_nfl, is_active=True).order_by('-year').first()
     if not tourn_nfl:
         tourn_nfl = Tournament.objects.create(
             league=league_nfl,
-            name="Temporada NFL 2024",
-            year=2024,
+            name="Temporada NFL 2026",
+            year=2026,
             is_active=True
         )
 
