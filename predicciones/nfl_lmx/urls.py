@@ -35,4 +35,5 @@ urlpatterns = [
     path('admin-portal/predictions/matrix/', views.api_admin_get_week_predictions, name='api_admin_predictions_matrix'),
     path('admin-portal/change-password/', views.api_admin_change_password, name='api_admin_change_password'),
     path('admin-portal/participants/<int:user_id>/reset-pin/', views.api_admin_reset_participant_pin, name='api_admin_reset_participant_pin'),
+    path('admin-portal/repair-database/', views.api_admin_repair_database, name='api_admin_repair_database'),
 ]

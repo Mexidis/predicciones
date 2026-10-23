@@ -441,4 +441,6 @@ def seed():
     print(f"- NFL: {nfl_w7.name} (1 partido finalizado y 13 programados)")
 
 if __name__ == '__main__':
-    seed()
+    from nfl_lmx.services.db_repair import repair_and_sync_all
+    res = repair_and_sync_all()
+    print("Seed & Repair resultado:", res)

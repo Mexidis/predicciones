@@ -67,6 +67,7 @@ export default function AdminPortal({
 
   // ESPN sync state
   const [isSyncingEspn, setIsSyncingEspn] = useState(false);
+  const [isRepairing, setIsRepairing] = useState(false);
   const [espnMessage, setEspnMessage] = useState(null);
 
   // Initialize pool and week
@@ -236,6 +237,28 @@ export default function AdminPortal({
   };
 
   // Sincronización automática de resultados vía ESPN
+    const handleRepairDatabase = async () => {
+    if (!window.confirm("¿Deseas restaurar la base de datos a los torneos oficiales 2026? Esto eliminará partidos de 2024 y sincronizará los marcadores reales.")) return;
+    setIsRepairing(true);
+    setEspnMessage(null);
+    try {
+      const res = await api.repairDatabase();
+      if (res.status === 'ok') {
+        setEspnMessage({ success: 'Base de datos restaurada y sincronizada al 100% con torneos 2026.' });
+        if (selectedWeekId) {
+          const data = await api.getMatches(selectedWeekId);
+          if (data) setAdminMatches(data);
+        }
+      } else {
+        setEspnMessage({ error: res.error || 'Error al restaurar' });
+      }
+    } catch {
+      setEspnMessage({ error: 'Fallo de red al restaurar' });
+    } finally {
+      setIsRepairing(false);
+    }
+  };
+
   const handleSyncEspn = async () => {
     setIsSyncingEspn(true);
     setEspnMessage(null);
@@ -732,14 +755,27 @@ export default function AdminPortal({
                   </p>
                 </div>
 
-                <button
-                  disabled={isSyncingEspn}
-                  onClick={handleSyncEspn}
-                  className="flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-sport uppercase font-bold transition active:scale-95 disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingEspn ? 'animate-spin' : ''}`} />
-                  <span>{isSyncingEspn ? 'Sincronizando...' : 'Auto-Sincronizar ESPN'}</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={isRepairing}
+                    onClick={handleRepairDatabase}
+                    className="flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-600/90 hover:bg-amber-500 text-white text-xs font-sport uppercase font-bold transition active:scale-95 disabled:opacity-50"
+                    title="Elimina partidos viejos de 2024 y sincroniza las fechas 2026"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRepairing ? 'animate-spin' : ''}`} />
+                    <span>{isRepairing ? 'Restaurando...' : 'Limpiar y Restaurar 2026'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSyncingEspn}
+                    onClick={handleSyncEspn}
+                    className="flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-sport uppercase font-bold transition active:scale-95 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingEspn ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingEspn ? 'Sincronizando...' : 'Auto-Sincronizar ESPN'}</span>
+                  </button>
+                </div>
               </div>
 
               {espnMessage && (

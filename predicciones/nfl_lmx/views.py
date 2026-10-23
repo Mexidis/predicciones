@@ -13,6 +13,7 @@ from .serializers import (
     PoolSerializer, PredictionSerializer, UserSerializer
 )
 from .services.espn_sync import sync_espn_nfl, sync_espn_lmx
+from .services.db_repair import repair_and_sync_all
 
 # --- AUTENTICACIÓN Y REGISTRO ---
 
@@ -654,3 +655,12 @@ def api_admin_reset_participant_pin(request, user_id):
         return Response({'success': True, 'message': f'PIN de {name} actualizado con éxito.'})
     except User.DoesNotExist:
         return Response({'error': 'Participante no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['POST'])
+def api_admin_repair_database(request):
+    """
+    Restaura la base de datos a los torneos 2026, elimina partidos de 2024
+    y sincroniza Jornadas y Semanas oficiales.
+    """
+    res = repair_and_sync_all()
+    return Response(res)
