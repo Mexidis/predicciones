@@ -215,30 +215,21 @@ def seed():
             t.save()
         nfl_teams[td["short_name"]] = t
 
-    # 8. Liga MX Semanas (Jornada 12, Jornada 13, Jornada 14)
-    lmx_w12, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_lmx,
-        week_number=12,
-        defaults={"name": "Jornada 12", "is_closed": True}
-    )
-    lmx_w12.is_closed = True
-    lmx_w12.save()
+    # 8. Liga MX Semanas (Jornadas 1 a 17)
+    lmx_weeks = {}
+    for j in range(1, 18):
+        is_closed = (j <= 13)
+        w, _ = MatchWeek.objects.get_or_create(
+            tournament=tourn_lmx,
+            week_number=j,
+            defaults={"name": f"Jornada {j}", "is_closed": is_closed}
+        )
+        w.is_closed = is_closed
+        w.save()
+        lmx_weeks[j] = w
 
-    lmx_w13, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_lmx,
-        week_number=13,
-        defaults={"name": "Jornada 13", "is_closed": True}
-    )
-    lmx_w13.is_closed = True
-    lmx_w13.save()
-
-    lmx_w14, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_lmx,
-        week_number=14,
-        defaults={"name": "Jornada 14", "is_closed": False}
-    )
-    lmx_w14.is_closed = False
-    lmx_w14.save()
+    lmx_w13 = lmx_weeks[13]
+    lmx_w14 = lmx_weeks[14]
 
     # Partidos exactos de JORNADA 13 (Martes 20 y Miércoles 21 de Octubre 2026)
     lmx_j13_matches_spec = [
@@ -378,38 +369,20 @@ def seed():
             away_form=sp.get("af", "")
         )
 
-    # 9. NFL Semanas (Semana 5, Semana 6, Semana 7, Semana 8)
-    nfl_w5, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_nfl,
-        week_number=5,
-        defaults={"name": "Semana 5", "is_closed": True}
-    )
-    nfl_w5.is_closed = True
-    nfl_w5.save()
+    # 9. NFL Semanas (Semanas 1 a 18)
+    nfl_weeks = {}
+    for s in range(1, 19):
+        is_closed = (s <= 6)
+        w, _ = MatchWeek.objects.get_or_create(
+            tournament=tourn_nfl,
+            week_number=s,
+            defaults={"name": f"Semana {s}", "is_closed": is_closed}
+        )
+        w.is_closed = is_closed
+        w.save()
+        nfl_weeks[s] = w
 
-    nfl_w6, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_nfl,
-        week_number=6,
-        defaults={"name": "Semana 6", "is_closed": True}
-    )
-    nfl_w6.is_closed = True
-    nfl_w6.save()
-
-    nfl_w7, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_nfl,
-        week_number=7,
-        defaults={"name": "Semana 7", "is_closed": False}
-    )
-    nfl_w7.is_closed = False
-    nfl_w7.save()
-
-    nfl_w8, _ = MatchWeek.objects.get_or_create(
-        tournament=tourn_nfl,
-        week_number=8,
-        defaults={"name": "Semana 8", "is_closed": False}
-    )
-    nfl_w8.is_closed = False
-    nfl_w8.save()
+    nfl_w7 = nfl_weeks[7]
 
     # Partidos exactos de SEMANA 7 NFL (Kalshi / Primero y Diez)
     nfl_w7_spec = [

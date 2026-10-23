@@ -1,5 +1,6 @@
 import requests
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db.models import Q
@@ -9,6 +10,34 @@ ESPN_NFL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/score
 ESPN_LMX_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/mex.1/scoreboard"
 
 _lmx_team_form_cache = {}
+
+# Mapeo oficial de fechas por Jornada para Liga MX Apertura 2026
+LMX_JORNADAS_DATES = {
+    1: ['20260716', '20260717', '20260718'],
+    2: ['20260721', '20260724', '20260725', '20260726'],
+    3: ['20260731', '20260801', '20260802'],
+    4: ['20260815', '20260816', '20260817'],
+    5: ['20260821', '20260822', '20260823'],
+    6: ['20260828', '20260829', '20260830'],
+    7: ['20260904', '20260905', '20260906'],
+    8: ['20260912', '20260913', '20260914', '20260915'],
+    9: ['20260918', '20260919', '20260920'],
+    10: ['20260925', '20260926', '20260927'],
+    11: ['20261009', '20261010', '20261011'],
+    12: ['20261016', '20261017', '20261018'],
+    13: ['20261020', '20261021'],
+    14: ['20261023', '20261024', '20261025'],
+    15: ['20261028', '20261030', '20261031', '20261101'],
+    16: ['20261106', '20261107', '20261108'],
+    17: ['20261120', '20261121', '20261122'],
+}
+
+def prefetch_lmx_forms(team_ids):
+    """Descarga de forma concurrente la racha oficial de los equipos para evitar timeouts."""
+    needed = [str(t).strip() for t in team_ids if str(t).strip() and str(t).strip() not in _lmx_team_form_cache]
+    if needed:
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            list(executor.map(fetch_lmx_team_form, needed))
 
 def get_or_create_structure():
     """Crea los deportes, ligas y torneos base si no existen."""
@@ -257,6 +286,10 @@ def sync_espn_nfl(week_number=None, year=None):
     """
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
     season_year = year or tourn_nfl.year or timezone.now().year
+    if season_year < 2026:
+        season_year = 2026
+        tourn_nfl.year = 2026
+        tourn_nfl.save()
 
     params = {
         'seasontype': 2,
@@ -348,23 +381,33 @@ def sync_espn_nfl(week_number=None, year=None):
 def sync_espn_lmx(week_number=None, date_str=None):
     """
     Sincroniza partidos de Liga MX desde ESPN.
-    Actualiza la racha de últimos 5 partidos consultando el calendario de liga oficial (idéntico a Google).
+    Soporta cualquier jornada (1 a 17) usando el calendario oficial de fechas.
+    Actualiza la racha de últimos 5 partidos de liga oficial (idéntico a Google).
     """
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
 
-    week_obj = None
+    week_num_int = None
     if week_number:
-        week_obj = MatchWeek.objects.filter(tournament=tourn_lmx, week_number=week_number).first()
+        try:
+            week_num_int = int(week_number)
+        except (ValueError, TypeError):
+            week_num_int = None
+
+    week_obj = None
+    if week_num_int:
+        week_obj = MatchWeek.objects.filter(tournament=tourn_lmx, week_number=week_num_int).first()
         if not week_obj:
             week_obj, _ = MatchWeek.objects.get_or_create(
                 tournament=tourn_lmx,
-                week_number=week_number,
-                defaults={"name": f"Jornada {week_number}"}
+                week_number=week_num_int,
+                defaults={"name": f"Jornada {week_num_int}"}
             )
 
     dates_to_query = []
     if date_str:
         dates_to_query = [date_str.replace("-", "")]
+    elif week_num_int and week_num_int in LMX_JORNADAS_DATES:
+        dates_to_query = LMX_JORNADAS_DATES[week_num_int]
     elif week_obj and week_obj.matches.exists():
         dates_to_query = sorted({m.date_time.strftime('%Y%m%d') for m in week_obj.matches.all()})
     else:
@@ -392,6 +435,16 @@ def sync_espn_lmx(week_number=None, date_str=None):
                 week_number=14,
                 defaults={"name": "Jornada 14"}
             )
+
+    # Pre-descargar concurrentemente las rachas de los equipos involucrados
+    team_ids_to_prefetch = set()
+    for ev in all_events:
+        for c in ev.get('competitions', [{}])[0].get('competitors', []):
+            tid = c.get('team', {}).get('id')
+            if tid:
+                team_ids_to_prefetch.add(str(tid))
+    if team_ids_to_prefetch:
+        prefetch_lmx_forms(team_ids_to_prefetch)
 
     updated_matches = 0
     for event in all_events:

@@ -1,6 +1,6 @@
 """
 Django settings for quinielas project.
-Configurado para desarrollo local y despliegue gratuito en producción (Render/Vercel).
+Configurado para desarrollo local y despliegue gratuito en producción (Render/Vercel/Supabase).
 """
 
 from pathlib import Path
@@ -61,11 +61,15 @@ WSGI_APPLICATION = 'quinielas.wsgi.application'
 # Base de datos: usa DATABASE_URL (Supabase/Neon/Render PostgreSQL) si existe, sino SQLite local
 database_url = os.environ.get('DATABASE_URL')
 if database_url:
+    # Si la URL apunta al Transaction Pooler de Supabase (puerto 6543 o pooler.supabase.com),
+    # conn_max_age debe ser 0 para evitar errores de prepared statements en PgBouncer.
+    is_pooler = 'pooler.supabase.com' in database_url or ':6543' in database_url
     DATABASES = {
         'default': dj_database_url.config(
             default=database_url,
-            conn_max_age=600,
+            conn_max_age=0 if is_pooler else 600,
             conn_health_checks=True,
+            ssl_require=True if 'supabase' in database_url else False,
         )
     }
 else:
@@ -91,13 +95,19 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.AllowAny',
     ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
-    ]
+    'DEFAULT_AUTHENTICATION_CLASSES': []
 }
 
 CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_CREDENTIALS = False
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.vercel.app',
+    'https://*.onrender.com',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3000',
+]
 
 LANGUAGE_CODE = 'es-mx'
 TIME_ZONE = 'America/Mexico_City'
