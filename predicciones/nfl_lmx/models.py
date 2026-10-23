@@ -103,10 +103,14 @@ class Match(models.Model):
             self.winner = 'DRAW'
         self.save()
 
-        # Recalcular predicciones de este partido
-        for pred in self.predictions.all():
-            pred.is_correct = (pred.pick == self.winner)
-            pred.save(update_fields=['is_correct'])
+        # Recalcular predicciones de este partido en una sola consulta SQL eficiente
+        self.predictions.update(
+            is_correct=models.Case(
+                models.When(pick=self.winner, then=True),
+                default=False,
+                output_field=models.BooleanField()
+            )
+        )
 
     def __str__(self):
         return f"{self.home_team.short_name or self.home_team.name} vs {self.away_team.short_name or self.away_team.name} ({self.week.name})"

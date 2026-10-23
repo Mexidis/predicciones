@@ -51,25 +51,25 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-      <div className="bg-stadium-900 border border-white/10 w-full max-w-sm rounded-3xl p-6 sm:p-7 shadow-2xl relative animate-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 bg-black/75 dark:bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+      <div className="bg-white dark:bg-stadium-900 border border-slate-200 dark:border-white/10 w-full max-w-sm rounded-3xl p-6 sm:p-7 shadow-2xl relative animate-in zoom-in-95 duration-150">
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 text-slate-400 hover:text-white p-1.5 rounded-full bg-stadium-800 transition"
+          className="absolute top-4 right-4 text-slate-400 hover:text-slate-800 dark:hover:text-white p-1.5 rounded-full bg-slate-100 dark:bg-stadium-800 transition"
         >
           <X className="w-4 h-4" />
         </button>
 
         <div className="text-center mb-6">
-          <div className="w-13 h-13 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-blue-500 p-0.5 mx-auto mb-3 shadow-lg shadow-indigo-950/50">
-            <div className="w-full h-full bg-[#0B0E20] rounded-[14px] flex items-center justify-center">
-              <UserPlus className="w-6 h-6 text-indigo-300" />
+          <div className="w-13 h-13 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-blue-500 p-0.5 mx-auto mb-3 shadow-lg shadow-indigo-500/20 dark:shadow-indigo-950/50">
+            <div className="w-full h-full bg-indigo-50 dark:bg-[#0B0E20] rounded-[14px] flex items-center justify-center">
+              <UserPlus className="w-6 h-6 text-indigo-600 dark:text-indigo-300" />
             </div>
           </div>
-          <h3 className="text-lg font-black font-sport uppercase tracking-wider text-white">
+          <h3 className="text-lg font-black font-sport uppercase tracking-wider text-slate-900 dark:text-white">
             {isLogin ? 'Entrar a la Quiniela' : 'Darse de Alta en el Grupo'}
           </h3>
-          <p className="text-xs text-indigo-200/80 mt-1 font-medium">
+          <p className="text-xs text-slate-600 dark:text-indigo-200/80 mt-1 font-medium">
             {isLogin
               ? 'Accede con tu nombre de usuario y PIN'
               : 'Ingresa tu nombre o apodo familiar para comenzar'}
@@ -77,7 +77,7 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
         </div>
 
         {error && (
-          <div className="mb-4 text-xs text-rose-300 bg-rose-950/60 border border-rose-800/80 p-3 rounded-2xl">
+          <div className="mb-4 text-xs text-rose-800 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800/80 p-3 rounded-2xl">
             {error}
           </div>
         )}
@@ -85,7 +85,7 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
         <form onSubmit={handleSubmit} className="space-y-3.5">
           {!isLogin && (
             <div>
-              <label className="text-[11px] font-bold text-slate-300 block mb-1">
+              <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
                 ¿Cómo te conocen en la familia? (Tu Nombre o Apodo) *
               </label>
               <input
@@ -98,13 +98,13 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
                     setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, ''));
                   }
                 }}
-                className="w-full bg-[#090C1A] border border-indigo-500/25 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none"
+                className="w-full bg-slate-50 dark:bg-[#090C1A] border border-slate-300 dark:border-indigo-500/25 focus:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white outline-none"
               />
             </div>
           )}
 
           <div>
-            <label className="text-[11px] font-bold text-slate-300 block mb-1">
+            <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
               Nombre de Usuario *
             </label>
             <input
@@ -112,12 +112,12 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full bg-[#090C1A] border border-indigo-500/25 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none"
+              className="w-full bg-slate-50 dark:bg-[#090C1A] border border-slate-300 dark:border-indigo-500/25 focus:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white outline-none"
             />
           </div>
 
           <div>
-            <label className="text-[11px] font-bold text-slate-300 block mb-1">
+            <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
               PIN o Contraseña sencilla *
             </label>
             <input
@@ -125,20 +125,20 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-[#090C1A] border border-indigo-500/25 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none font-mono"
+              className="w-full bg-slate-50 dark:bg-[#090C1A] border border-slate-300 dark:border-indigo-500/25 focus:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white outline-none font-mono"
             />
           </div>
 
           {!isLogin && (
             <div>
-              <label className="text-[11px] font-bold text-slate-300 block mb-1">
+              <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
                 Código de Quiniela
               </label>
               <input
                 type="text"
                 value={inviteCode || defaultInviteCode}
                 onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-                className="w-full bg-[#090C1A] border border-indigo-500/25 focus:border-indigo-400 rounded-xl px-3.5 py-2.5 text-xs text-indigo-300 font-mono font-bold uppercase outline-none"
+                className="w-full bg-slate-50 dark:bg-[#090C1A] border border-slate-300 dark:border-indigo-500/25 focus:border-indigo-500 rounded-xl px-3.5 py-2.5 text-xs text-indigo-700 dark:text-indigo-300 font-mono font-bold uppercase outline-none"
               />
             </div>
           )}
@@ -146,7 +146,7 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white font-black font-sport uppercase tracking-wider text-sm transition active:scale-95 shadow-xl shadow-indigo-950/70 disabled:opacity-50 ring-1 ring-indigo-400/40"
+            className="w-full py-3 rounded-2xl bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 hover:from-blue-500 hover:to-violet-500 text-white font-black font-sport uppercase tracking-wider text-sm transition active:scale-95 shadow-lg shadow-indigo-600/30 disabled:opacity-50 ring-1 ring-indigo-400/40"
           >
             {loading ? 'Procesando...' : (isLogin ? 'Entrar a mis Quinielas' : 'Darse de Alta y Comenzar')}
           </button>
@@ -155,7 +155,7 @@ export default function JoinModal({ isOpen, onClose, defaultInviteCode, onUserRe
         <div className="mt-4 text-center">
           <button
             onClick={() => setIsLogin(!isLogin)}
-            className="text-xs text-indigo-300 hover:text-white underline font-medium"
+            className="text-xs text-indigo-600 dark:text-indigo-300 hover:text-indigo-900 dark:hover:text-white underline font-medium"
           >
             {isLogin ? '¿Primera vez aquí? Regístrate gratis' : '¿Ya te registraste? Inicia sesión'}
           </button>

@@ -38,9 +38,11 @@ class TeamSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'short_name', 'logo_url', 'espn_id']
 
 class MatchWeekSerializer(serializers.ModelSerializer):
+    matches_count = serializers.IntegerField(source='matches.count', read_only=True)
+
     class Meta:
         model = MatchWeek
-        fields = ['id', 'week_number', 'name', 'start_date', 'end_date', 'is_closed']
+        fields = ['id', 'week_number', 'name', 'start_date', 'end_date', 'is_closed', 'matches_count']
 
 class MatchSerializer(serializers.ModelSerializer):
     home_team = TeamSerializer(read_only=True)

@@ -349,15 +349,15 @@ def seed():
 
     # Partidos de JORNADA 14 (Viernes 23 a Domingo 25 de Octubre 2026) -> ABIERTOS / SCHEDULED
     lmx_j14_matches_spec = [
-        {"home": "Necaxa", "away": "FC Juárez", "dt": "2026-10-23 19:00:00"},
-        {"home": "Atlante", "away": "San Luis", "dt": "2026-10-23 21:00:00"},
-        {"home": "León", "away": "Toluca", "dt": "2026-10-24 17:00:00"},
-        {"home": "Rayados", "away": "Chivas", "dt": "2026-10-24 19:00:00"},
-        {"home": "Pumas", "away": "Tigres", "dt": "2026-10-24 21:10:00"},
-        {"home": "Atlas", "away": "Puebla", "dt": "2026-10-25 17:00:00"},
-        {"home": "Querétaro", "away": "Cruz Azul", "dt": "2026-10-25 19:00:00"},
-        {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00"},
-        {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00"},
+        {"home": "Necaxa", "away": "FC Juárez", "dt": "2026-10-23 19:00:00", "hf": "D-D-E-D-D", "af": "V-D-E-D-D"},
+        {"home": "Atlante", "away": "San Luis", "dt": "2026-10-23 21:00:00", "hf": "E-V-D-D-V", "af": "V-V-D-E-V"},
+        {"home": "León", "away": "Toluca", "dt": "2026-10-24 17:00:00", "hf": "E-V-E-D-V", "af": "D-E-D-E-E"},
+        {"home": "Rayados", "away": "Chivas", "dt": "2026-10-24 19:00:00", "hf": "V-D-E-V-V", "af": "E-D-E-E-V"},
+        {"home": "Pumas", "away": "Tigres", "dt": "2026-10-24 21:10:00", "hf": "E-D-E-V-D", "af": "D-V-V-E-D"},
+        {"home": "Atlas", "away": "Puebla", "dt": "2026-10-25 17:00:00", "hf": "E-V-E-V-D", "af": "E-D-E-E-D"},
+        {"home": "Querétaro", "away": "Cruz Azul", "dt": "2026-10-25 19:00:00", "hf": "E-V-V-D-D", "af": "D-E-E-V-V"},
+        {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00", "hf": "E-V-E-V-V", "af": "E-D-E-D-D"},
+        {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00", "hf": "E-D-E-E-E", "af": "V-V-V-V-V"},
     ]
 
     lmx_w14.matches.all().delete()
@@ -373,7 +373,9 @@ def seed():
             status="SCHEDULED",
             home_score=None,
             away_score=None,
-            winner=None
+            winner=None,
+            home_form=sp.get("hf", ""),
+            away_form=sp.get("af", "")
         )
 
     # 9. NFL Semanas (Semana 5, Semana 6, Semana 7, Semana 8)

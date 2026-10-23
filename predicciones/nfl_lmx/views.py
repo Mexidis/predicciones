@@ -23,7 +23,6 @@ def api_login(request):
 
     user = authenticate(username=username, password=password)
     if not user:
-        # Intento de login por apodo si no coincide username
         try:
             profile = UserProfile.objects.filter(display_name__iexact=username).first()
             if profile:
@@ -56,7 +55,6 @@ def api_register(request):
     user = User.objects.create_user(username=username, email=email, password=password, first_name=display_name)
     UserProfile.objects.create(user=user, display_name=display_name)
 
-    # Si proporcionó código de invitación, unirlo automáticamente
     joined_pool = None
     if invite_code:
         try:
@@ -83,9 +81,9 @@ def api_get_users(request):
 def api_list_pools(request):
     user_id = request.query_params.get('user_id')
     if user_id:
-        pools = Pool.objects.filter(memberships__user_id=user_id)
+        pools = Pool.objects.filter(memberships__user_id=user_id).select_related('tournament__league')
     else:
-        pools = Pool.objects.all()
+        pools = Pool.objects.all().select_related('tournament__league')
     return Response(PoolSerializer(pools, many=True).data)
 
 @api_view(['POST'])
@@ -138,11 +136,12 @@ def api_list_matches(request):
     matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
     matches_data = MatchSerializer(matches, many=True).data
 
-    # Adjuntar el pick actual del usuario si aplica
     if user_id and pool_id:
         user_picks = {
-            p.match_id: {'pick': p.pick, 'is_correct': p.is_correct}
-            for p in Prediction.objects.filter(pool_id=pool_id, user_id=user_id, match__week_id=week_id)
+            p['match_id']: {'pick': p['pick'], 'is_correct': p['is_correct']}
+            for p in Prediction.objects.filter(
+                pool_id=pool_id, user_id=user_id, match__week_id=week_id
+            ).values('match_id', 'pick', 'is_correct')
         }
         for m in matches_data:
             m['user_pick'] = user_picks.get(m['id'])
@@ -174,16 +173,16 @@ def api_save_prediction(request):
             'error': f'El partido {match.home_team.name} vs {match.away_team.name} ya comenzó o finalizó. No es posible pronosticarlo.'
         }, status=status.HTTP_400_BAD_REQUEST)
 
+    is_hit = None
+    if match.status == 'FINAL' and match.winner:
+        is_hit = (pick == match.winner)
+
     pred, created = Prediction.objects.update_or_create(
         pool=pool,
         user=user,
         match=match,
-        defaults={'pick': pick}
+        defaults={'pick': pick, 'is_correct': is_hit}
     )
-
-    if match.status == 'FINAL' and match.winner:
-        pred.is_correct = (pred.pick == match.winner)
-        pred.save(update_fields=['is_correct'])
 
     return Response({
         'success': True,
@@ -192,29 +191,33 @@ def api_save_prediction(request):
 
 # --- TABLA DE POSICIONES Y PODIO OLÍMPICO (STANDINGS) ---
 
-def calculate_standings_with_medals(memberships, week_id=None, tournament=None):
+def calculate_standings_with_medals(pool, memberships, week_id=None):
     """
     Calcula puntos de la semana y acumulados con ranking y medallas olímpicas.
-    Empates comparten posición.
+    Optimizado: una sola consulta agrupada en lugar de N+1 consultas por participante.
     """
+    # Consulta agrupada de todos los pronósticos del pool
+    user_stats = {
+        row['user_id']: row
+        for row in Prediction.objects.filter(pool=pool).values('user_id').annotate(
+            weekly_hits=Count('id', filter=Q(match__week_id=week_id, is_correct=True)),
+            weekly_total=Count('id', filter=Q(match__week_id=week_id)),
+            total_hits=Count('id', filter=Q(is_correct=True)),
+            total_picks=Count('id')
+        )
+    }
+
     standings = []
     for mem in memberships:
         user = mem.user
         display_name = user.profile.display_name if hasattr(user, 'profile') else user.first_name or user.username
         avatar_color = user.profile.avatar_color if hasattr(user, 'profile') else '#3B82F6'
 
-        # Puntos de la semana
-        weekly_hits = 0
-        weekly_total = 0
-        if week_id:
-            w_preds = Prediction.objects.filter(pool=mem.pool, user=user, match__week_id=week_id)
-            weekly_total = w_preds.count()
-            weekly_hits = w_preds.filter(is_correct=True).count()
-
-        # Puntos acumulados de todo el torneo
-        t_preds = Prediction.objects.filter(pool=mem.pool, user=user, match__week__tournament=mem.pool.tournament)
-        total_hits = t_preds.filter(is_correct=True).count()
-        total_picks = t_preds.count()
+        stats = user_stats.get(user.id, {})
+        weekly_hits = stats.get('weekly_hits', 0) if week_id else 0
+        weekly_total = stats.get('weekly_total', 0) if week_id else 0
+        total_hits = stats.get('total_hits', 0)
+        total_picks = stats.get('total_picks', 0)
 
         standings.append({
             'user_id': user.id,
@@ -228,8 +231,6 @@ def calculate_standings_with_medals(memberships, week_id=None, tournament=None):
             'total_picks': total_picks,
         })
 
-    # Asignar Rango y Medallas según los puntos
-    # NOTA: Las medallas SOLO aplican al acumulado (general), no a la tabla semanal por regla de negocio
     def assign_ranks(items, score_key, rank_prefix, with_medals=False):
         items.sort(key=lambda x: x[score_key], reverse=True)
         for i, item in enumerate(items):
@@ -264,18 +265,34 @@ def api_pool_standings(request, pool_id):
     except Pool.DoesNotExist:
         return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Si no se pasó week_id, tomar la última semana
     if not week_id:
         latest_week = pool.tournament.weeks.order_by('-week_number').first()
         week_id = latest_week.id if latest_week else None
 
     memberships = pool.memberships.select_related('user__profile').all()
-    standings = calculate_standings_with_medals(memberships, week_id=week_id)
+    standings = calculate_standings_with_medals(pool, memberships, week_id=week_id)
 
-    # Detalle de picks de la jornada (sólo para partidos bloqueados o finalizados)
+    # Detalle de picks de la jornada (revelados para partidos iniciados o finalizados)
     locked_picks_matrix = []
     if week_id:
-        week_matches = Match.objects.filter(week_id=week_id).order_by('date_time')
+        week_matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
+        
+        # Obtener todos los pronósticos de la semana en una sola consulta
+        week_preds = Prediction.objects.filter(
+            pool=pool,
+            match__week_id=week_id
+        ).values('match_id', 'user_id', 'pick', 'is_correct')
+
+        preds_by_match = {}
+        for p in week_preds:
+            m_id = p['match_id']
+            if m_id not in preds_by_match:
+                preds_by_match[m_id] = {}
+            preds_by_match[m_id][p['user_id']] = {
+                'pick': p['pick'],
+                'is_correct': p['is_correct']
+            }
+
         for m in week_matches:
             match_entry = {
                 'match_id': m.id,
@@ -284,16 +301,8 @@ def api_pool_standings(request, pool_id):
                 'winner': m.winner,
                 'is_locked': m.is_locked,
                 'status': m.status,
-                'picks': {}
+                'picks': preds_by_match.get(m.id, {}) if m.is_locked else {}
             }
-            # Solo revelamos los picks si el partido ya inició (para respetar la regla deportiva)
-            if m.is_locked:
-                preds = Prediction.objects.filter(pool=pool, match=m)
-                for p in preds:
-                    match_entry['picks'][p.user_id] = {
-                        'pick': p.pick,
-                        'is_correct': p.is_correct
-                    }
             locked_picks_matrix.append(match_entry)
 
     return Response({
@@ -317,13 +326,19 @@ def api_pool_activity(request, pool_id):
         latest_week = pool.tournament.weeks.order_by('-week_number').first()
         week_id = latest_week.id if latest_week else None
 
-    total_matches = Match.objects.filter(week_id=week_id).count()
+    total_matches = Match.objects.filter(week_id=week_id).count() if week_id else 0
     members = pool.memberships.select_related('user__profile').all()
+
+    # Agrupación eficiente de picks por usuario
+    user_picks_count = {
+        row['user_id']: row['cnt']
+        for row in Prediction.objects.filter(pool=pool, match__week_id=week_id).values('user_id').annotate(cnt=Count('id'))
+    } if week_id else {}
 
     activity = []
     for mem in members:
         user = mem.user
-        submitted_picks = Prediction.objects.filter(pool=pool, user=user, match__week_id=week_id).count()
+        submitted_picks = user_picks_count.get(user.id, 0)
         is_complete = (submitted_picks >= total_matches) and total_matches > 0
 
         activity.append({
@@ -334,11 +349,10 @@ def api_pool_activity(request, pool_id):
             'submitted_picks': submitted_picks,
             'total_matches': total_matches,
             'is_complete': is_complete,
-            'missing_picks': total_matches - submitted_picks
+            'missing_picks': max(0, total_matches - submitted_picks)
         })
 
-    # Partidos próximos que están por iniciar
-    next_match = Match.objects.filter(week_id=week_id, date_time__gt=timezone.now()).order_by('date_time').first()
+    next_match = Match.objects.filter(week_id=week_id, date_time__gt=timezone.now()).order_by('date_time').first() if week_id else None
 
     return Response({
         'pool_id': pool.id,
@@ -356,13 +370,18 @@ def api_send_auto_reminder(request, pool_id):
     except Pool.DoesNotExist:
         return Response({'error': 'Pool no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    total_matches = Match.objects.filter(week_id=week_id).count()
+    total_matches = Match.objects.filter(week_id=week_id).count() if week_id else 0
     members = pool.memberships.select_related('user__profile').all()
-    reminded_users = []
 
+    user_picks_count = {
+        row['user_id']: row['cnt']
+        for row in Prediction.objects.filter(pool=pool, match__week_id=week_id).values('user_id').annotate(cnt=Count('id'))
+    } if week_id else {}
+
+    reminded_users = []
     for mem in members:
         user = mem.user
-        picks_count = Prediction.objects.filter(pool=pool, user=user, match__week_id=week_id).count()
+        picks_count = user_picks_count.get(user.id, 0)
         if picks_count < total_matches:
             name = user.profile.display_name if hasattr(user, 'profile') else user.username
             reminded_users.append({
@@ -387,7 +406,7 @@ def api_sync_espn(request):
     if league_code == 'NFL':
         result = sync_espn_nfl(week_number=week_number)
     else:
-        result = sync_espn_lmx()
+        result = sync_espn_lmx(week_number=week_number)
 
     return Response(result)
 
@@ -447,7 +466,7 @@ def api_admin_bulk_results(request):
 @api_view(['GET'])
 def api_admin_get_participants(request):
     """Lista todos los participantes registrados con sus pools asociadas."""
-    users = User.objects.filter(is_superuser=False).prefetch_related('pool_memberships__pool')
+    users = User.objects.filter(is_superuser=False).select_related('profile').prefetch_related('pool_memberships__pool')
     result = []
     for u in users:
         pools_joined = [m.pool.name for m in u.pool_memberships.all()]
@@ -467,7 +486,7 @@ def api_admin_create_participant(request):
     name = request.data.get('name', '').strip()
     username = request.data.get('username', '').strip().lower()
     password = request.data.get('password', '1234')
-    pool_codes = request.data.get('pool_codes', []) # ej. ['NFL-FAMILIA', 'LMX-FAMILIA']
+    pool_codes = request.data.get('pool_codes', [])
 
     if not name or not username:
         return Response({'error': 'El nombre y nombre de usuario son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
@@ -478,7 +497,6 @@ def api_admin_create_participant(request):
     user = User.objects.create_user(username=username, email=f"{username}@quinielas.app", password=password, first_name=name)
     UserProfile.objects.create(user=user, display_name=name)
 
-    # Inscribir a pools solicitadas
     assigned_pools = []
     for code in pool_codes:
         try:
@@ -559,7 +577,7 @@ def api_admin_save_participant_predictions(request):
 def api_admin_get_week_predictions(request):
     """
     Retorna la matriz de pronósticos de todos los participantes para una jornada
-    permitiendo al administrador ver y editar los picks en una sola vista.
+    en una sola consulta optimizada.
     """
     pool_id = request.query_params.get('pool_id')
     week_id = request.query_params.get('week_id')
@@ -567,28 +585,33 @@ def api_admin_get_week_predictions(request):
     if not pool_id or not week_id:
         return Response({'error': 'pool_id y week_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
 
-    matches = Match.objects.filter(week_id=week_id).order_by('date_time')
+    matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
     pool = Pool.objects.get(id=pool_id)
     members = pool.memberships.select_related('user__profile').filter(user__is_superuser=False)
+
+    # Una sola consulta para todas las predicciones de la jornada
+    all_preds = Prediction.objects.filter(pool=pool, match__week_id=week_id).values('user_id', 'match_id', 'pick')
+    user_preds_map = {}
+    for p in all_preds:
+        u_id = p['user_id']
+        if u_id not in user_preds_map:
+            user_preds_map[u_id] = {}
+        user_preds_map[u_id][p['match_id']] = p['pick']
 
     users_data = []
     for mem in members:
         user = mem.user
-        preds = {p.match_id: p.pick for p in Prediction.objects.filter(pool=pool, user=user, match__week_id=week_id)}
         users_data.append({
             'user_id': user.id,
             'display_name': user.profile.display_name if hasattr(user, 'profile') else user.username,
             'username': user.username,
-            'picks': preds
+            'picks': user_preds_map.get(user.id, {})
         })
 
     return Response({
         'matches': MatchSerializer(matches, many=True).data,
         'participants': users_data
     })
-
-
-
 
 @api_view(['POST'])
 def api_admin_change_password(request):

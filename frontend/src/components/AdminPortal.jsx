@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield, KeyRound, Save, RefreshCw, UserPlus, Users, Trash2,
+  Shield, KeyRound, Save, Sun, Moon, RefreshCw, UserPlus, Users, Trash2,
   Share2, ArrowLeft, Check, AlertCircle, CheckCircle, Clock,
   FileCheck2, ListOrdered, CheckCircle2, ChevronRight
 } from 'lucide-react';
@@ -11,7 +11,9 @@ export default function AdminPortal({
   onBackToApp,
   currentLeague,
   pools,
-  weeks
+  weeks,
+  theme = 'dark',
+  onToggleTheme
 }) {
   const [adminUser, setAdminUser] = useState(() => {
     const saved = localStorage.getItem('quiniela_admin_session');
@@ -238,7 +240,8 @@ export default function AdminPortal({
     setIsSyncingEspn(true);
     setEspnMessage(null);
     try {
-      const res = await api.syncEspn(currentLeague);
+      const currentWeek = weeks.find(w => w.id === selectedWeekId);
+      const res = await api.syncEspn(currentLeague, currentWeek?.week_number);
       if (res.error) {
         setEspnMessage({ error: res.error });
       } else {
@@ -441,6 +444,15 @@ export default function AdminPortal({
           </div>
 
           <div className="flex items-center gap-2">
+            {onToggleTheme && (
+              <button
+                onClick={onToggleTheme}
+                className="p-1.5 rounded-lg bg-slate-100 dark:bg-[#121630] hover:bg-slate-200 dark:hover:bg-[#1A2045] text-slate-700 dark:text-indigo-300 border border-slate-200 dark:border-indigo-500/20 text-xs transition"
+                title="Cambiar tema claro/oscuro"
+              >
+                {theme === 'dark' ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-indigo-400" />}
+              </button>
+            )}
             <span className="text-xs text-slate-400 hidden sm:inline">Admin: {adminUser.name}</span>
             <button
               onClick={handleLogout}
