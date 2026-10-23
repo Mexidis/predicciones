@@ -41,35 +41,87 @@ def api_login(request):
 
 @api_view(['POST'])
 def api_register(request):
+    import re
+    display_name = request.data.get('display_name', '').strip()
     username = request.data.get('username', '').strip().lower()
-    display_name = request.data.get('display_name', '').strip() or username
+    if not username and display_name:
+        username = re.sub(r'[^a-z0-9]', '', display_name.lower())
+
     password = request.data.get('password', '1234')
     email = request.data.get('email', f"{username}@quinielas.app")
-    invite_code = request.data.get('invite_code', '').strip()
+    invite_code = request.data.get('invite_code', '').strip().upper()
 
     if not username:
-        return Response({'error': 'El nombre de usuario es obligatorio'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'El nombre o apodo es obligatorio'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not password or len(password) < 4:
+        return Response({'error': 'El PIN debe tener al menos 4 números o caracteres.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.filter(username=username).exists():
-        return Response({'error': 'Ese usuario ya existe. Si eres tú, inicia sesión.'}, status=status.HTTP_400_BAD_REQUEST)
+        existing_user = User.objects.get(username=username)
+        # Si la contraseña enviada coincide con el PIN, iniciar sesión directamente
+        if existing_user.check_password(password):
+            return Response({
+                'user': UserSerializer(existing_user).data,
+                'message': f'¡Bienvenido de vuelta, {existing_user.profile.display_name if hasattr(existing_user, "profile") else existing_user.username}!'
+            }, status=status.HTTP_200_OK)
+        return Response({'error': f'El nombre o usuario "{display_name or username}" ya está registrado. Inicia sesión con tu PIN.'}, status=status.HTTP_400_BAD_REQUEST)
 
     user = User.objects.create_user(username=username, email=email, password=password, first_name=display_name)
-    UserProfile.objects.create(user=user, display_name=display_name)
+    UserProfile.objects.create(user=user, display_name=display_name or username)
 
-    joined_pool = None
-    if invite_code:
+    # Inscribir en pools familiares automáticamente
+    if invite_code in ['NFL-FAMILIA', 'FAM-NFL', 'LMX-FAMILIA', 'FAM-LMX', '']:
+        for p in Pool.objects.filter(invite_code__in=['NFL-FAMILIA', 'LMX-FAMILIA']):
+            PoolMembership.objects.get_or_create(pool=p, user=user, defaults={'role': 'MEMBER'})
+    else:
         try:
             pool = Pool.objects.get(invite_code__iexact=invite_code)
-            PoolMembership.objects.create(pool=pool, user=user, role='MEMBER')
-            joined_pool = PoolSerializer(pool).data
+            PoolMembership.objects.get_or_create(pool=pool, user=user, defaults={'role': 'MEMBER'})
         except Pool.DoesNotExist:
             pass
 
     return Response({
         'user': UserSerializer(user).data,
-        'joined_pool': joined_pool,
-        'message': 'Registro exitoso'
+        'message': f'¡Bienvenido al grupo, {display_name or username}!'
     }, status=status.HTTP_201_CREATED)
+
+@api_view(['POST'])
+def api_change_user_pin(request):
+    """
+    Permite a un usuario autenticado cambiar su propio PIN de seguridad.
+    """
+    user_id = request.data.get('user_id')
+    username = request.data.get('username', '').strip().lower()
+    current_pin = request.data.get('current_pin', '')
+    new_pin = request.data.get('new_pin', '').strip()
+
+    if not new_pin or len(new_pin) < 4:
+        return Response({'error': 'El nuevo PIN debe tener al menos 4 caracteres o números.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = None
+    if user_id:
+        user = User.objects.filter(id=user_id).first()
+    elif username:
+        user = User.objects.filter(username=username).first()
+
+    if not user:
+        return Response({'error': 'Usuario no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Validar PIN actual si el usuario tiene contraseña previa
+    if user.has_usable_password():
+        if not current_pin:
+            return Response({'error': 'Debes ingresar tu PIN actual.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not user.check_password(current_pin):
+            return Response({'error': 'Tu PIN actual es incorrecto.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_pin)
+    user.save()
+
+    return Response({
+        'success': True,
+        'message': '¡Tu PIN ha sido actualizado con éxito!'
+    })
 
 @api_view(['GET'])
 def api_get_users(request):

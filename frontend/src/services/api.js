@@ -30,6 +30,15 @@ export const api = {
     return await res.json();
   },
 
+  async changeUserPin(userId, currentPin, newPin, username) {
+    const res = await fetch(API_BASE + '/auth/change-pin/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, current_pin: currentPin, new_pin: newPin, username: username })
+    });
+    return await res.json();
+  },
+
   // Pools
   async getPools(userId) {
     try {

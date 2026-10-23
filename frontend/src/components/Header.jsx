@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import {
   Trophy, Share2, Shield, Users, Check, ChevronDown, UserCircle,
-  LogIn, LogOut, Sparkles, Sun, Moon
+  LogIn, LogOut, Sparkles, Sun, Moon, KeyRound
 } from 'lucide-react';
 import { NflBallIcon, SoccerBallIcon } from './SportsIcons';
+import ChangePinModal from './ChangePinModal';
 
 export default function Header({
   currentLeague,
@@ -17,6 +18,7 @@ export default function Header({
 }) {
   const [copied, setCopied] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showChangePinModal, setShowChangePinModal] = useState(false);
 
   const inviteCode = selectedPool?.invite_code || (currentLeague === 'NFL' ? 'NFL-FAMILIA' : 'LMX-FAMILIA');
   const poolName = selectedPool?.name || (currentLeague === 'NFL' ? 'Pre NFL' : 'Liga MX');
@@ -120,7 +122,18 @@ export default function Header({
                       </p>
                     </div>
 
-                    <div className="pt-1">
+                    <div className="pt-1 space-y-1.5">
+                      <button
+                        onClick={() => {
+                          setShowUserMenu(false);
+                          setShowChangePinModal(true);
+                        }}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-indigo-950/40 border border-slate-200 dark:border-indigo-500/20 transition font-sport uppercase tracking-wider active:scale-95"
+                      >
+                        <KeyRound className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>Cambiar mi PIN</span>
+                      </button>
+
                       <button
                         onClick={() => {
                           setShowUserMenu(false);
@@ -191,6 +204,14 @@ export default function Header({
           </button>
         </div>
       </div>
+
+      {showChangePinModal && (
+        <ChangePinModal
+          isOpen={showChangePinModal}
+          onClose={() => setShowChangePinModal(false)}
+          currentUser={currentUser}
+        />
+      )}
     </header>
   );
 }

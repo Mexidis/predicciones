@@ -6,6 +6,7 @@ urlpatterns = [
     path('auth/login/', views.api_login, name='api_login'),
     path('auth/register/', views.api_register, name='api_register'),
     path('auth/users/', views.api_get_users, name='api_users'),
+    path('auth/change-pin/', views.api_change_user_pin, name='api_change_user_pin'),
 
     # Pools (Quinielas)
     path('pools/', views.api_list_pools, name='api_pools'),
