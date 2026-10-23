@@ -264,6 +264,7 @@ export default function App() {
     return (
       <AdminPortal
         onBackToApp={() => {
+          window.history.pushState({}, '', '/');
           setViewMode('app');
           loadUsersList();
         }}
@@ -291,7 +292,6 @@ export default function App() {
         selectedPool={selectedPool}
         currentUser={currentUser}
         onOpenJoinModal={() => setIsJoinModalOpen(true)}
-        onOpenAdminPortal={() => setViewMode('admin_portal')}
         onLogout={handleUserLogout}
         theme={theme}
         onToggleTheme={toggleTheme}

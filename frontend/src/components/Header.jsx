@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Trophy, Share2, Shield, Users, Check, ChevronDown, UserCircle,
-  LogIn, LogOut, KeyRound, Sparkles, Sun, Moon
+  LogIn, LogOut, Sparkles, Sun, Moon
 } from 'lucide-react';
 import { NflBallIcon, SoccerBallIcon } from './SportsIcons';
 
@@ -11,7 +11,6 @@ export default function Header({
   selectedPool,
   currentUser,
   onOpenJoinModal,
-  onOpenAdminPortal,
   onLogout,
   theme = 'dark',
   onToggleTheme
@@ -145,15 +144,6 @@ export default function Header({
                 <span>Entrar con PIN</span>
               </button>
             )}
-
-            {/* Direct Admin Portal Shortcut */}
-            <button
-              onClick={onOpenAdminPortal}
-              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#121630] dark:hover:bg-[#1A2045] text-slate-700 dark:text-indigo-300 hover:text-indigo-600 dark:hover:text-white border border-slate-200 dark:border-indigo-500/30 transition shadow-sm"
-              title="Acceso al Portal de Administrador"
-            >
-              <KeyRound className="w-4 h-4" />
-            </button>
           </div>
         </div>
 

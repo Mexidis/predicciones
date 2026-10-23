@@ -14,14 +14,11 @@ export default function AdminPortal({
   theme = 'dark',
   onToggleTheme
 }) {
-  const [adminUser, setAdminUser] = useState(() => {
-    const saved = localStorage.getItem('quiniela_admin_session');
-    return saved ? JSON.parse(saved) : null;
-  });
+  const [adminUser, setAdminUser] = useState(null);
 
   // Login form state
-  const [loginUser, setLoginUser] = useState('admin');
-  const [loginPass, setLoginPass] = useState('admin');
+  const [loginUser, setLoginUser] = useState('');
+  const [loginPass, setLoginPass] = useState('');
   const [loginError, setLoginError] = useState(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -272,6 +269,8 @@ export default function AdminPortal({
   const handleLogout = () => {
     setAdminUser(null);
     localStorage.removeItem('quiniela_admin_session');
+    setLoginPass('');
+    if (onBackToApp) onBackToApp();
   };
 
   // Pick Setting in Admin
