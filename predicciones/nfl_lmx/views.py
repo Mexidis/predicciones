@@ -1,8 +1,590 @@
-from django.shortcuts import render
-from rest_framework import viewsets
-from .serializers import TeamSerializer
-from .models import Team
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from django.contrib.auth import authenticate
+from django.contrib.auth.models import User
+from django.utils import timezone
+from django.db.models import Count, Q
+from .models import (
+    Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile
+)
+from .serializers import (
+    TournamentSerializer, MatchWeekSerializer, MatchSerializer,
+    PoolSerializer, PredictionSerializer, UserSerializer
+)
+from .services.espn_sync import sync_espn_nfl, sync_espn_lmx
 
-class TeamViewSet(viewsets.ModelViewSet):
-    queryset = Team.objects.all()
-    serializer_class = TeamSerializer
+# --- AUTENTICACIÓN Y REGISTRO ---
+
+@api_view(['POST'])
+def api_login(request):
+    username = request.data.get('username', '').strip().lower()
+    password = request.data.get('password', '')
+
+    user = authenticate(username=username, password=password)
+    if not user:
+        # Intento de login por apodo si no coincide username
+        try:
+            profile = UserProfile.objects.filter(display_name__iexact=username).first()
+            if profile:
+                user = authenticate(username=profile.user.username, password=password)
+        except Exception:
+            pass
+
+    if not user:
+        return Response({'error': 'Usuario o contraseña incorrectos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        'user': UserSerializer(user).data,
+        'message': f'¡Bienvenido {user.profile.display_name if hasattr(user, "profile") else user.username}!'
+    })
+
+@api_view(['POST'])
+def api_register(request):
+    username = request.data.get('username', '').strip().lower()
+    display_name = request.data.get('display_name', '').strip() or username
+    password = request.data.get('password', '1234')
+    email = request.data.get('email', f"{username}@quinielas.app")
+    invite_code = request.data.get('invite_code', '').strip()
+
+    if not username:
+        return Response({'error': 'El nombre de usuario es obligatorio'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if User.objects.filter(username=username).exists():
+        return Response({'error': 'Ese usuario ya existe. Si eres tú, inicia sesión.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = User.objects.create_user(username=username, email=email, password=password, first_name=display_name)
+    UserProfile.objects.create(user=user, display_name=display_name)
+
+    # Si proporcionó código de invitación, unirlo automáticamente
+    joined_pool = None
+    if invite_code:
+        try:
+            pool = Pool.objects.get(invite_code__iexact=invite_code)
+            PoolMembership.objects.create(pool=pool, user=user, role='MEMBER')
+            joined_pool = PoolSerializer(pool).data
+        except Pool.DoesNotExist:
+            pass
+
+    return Response({
+        'user': UserSerializer(user).data,
+        'joined_pool': joined_pool,
+        'message': 'Registro exitoso'
+    }, status=status.HTTP_201_CREATED)
+
+@api_view(['GET'])
+def api_get_users(request):
+    users = User.objects.all().select_related('profile')
+    return Response(UserSerializer(users, many=True).data)
+
+# --- POOLS (QUINIELAS) ---
+
+@api_view(['GET'])
+def api_list_pools(request):
+    user_id = request.query_params.get('user_id')
+    if user_id:
+        pools = Pool.objects.filter(memberships__user_id=user_id)
+    else:
+        pools = Pool.objects.all()
+    return Response(PoolSerializer(pools, many=True).data)
+
+@api_view(['POST'])
+def api_join_pool(request):
+    invite_code = request.data.get('invite_code', '').strip()
+    user_id = request.data.get('user_id')
+
+    if not invite_code or not user_id:
+        return Response({'error': 'Código de invitación y usuario requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        pool = Pool.objects.get(invite_code__iexact=invite_code)
+        user = User.objects.get(id=user_id)
+    except Pool.DoesNotExist:
+        return Response({'error': 'Código de quiniela no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+    except User.DoesNotExist:
+        return Response({'error': 'Usuario no válido'}, status=status.HTTP_404_NOT_FOUND)
+
+    membership, created = PoolMembership.objects.get_or_create(pool=pool, user=user)
+    return Response({
+        'success': True,
+        'message': f'Te has unido a {pool.name}',
+        'pool': PoolSerializer(pool).data
+    })
+
+# --- TORNEOS, JORNADAS Y PARTIDOS ---
+
+@api_view(['GET'])
+def api_list_tournaments(request):
+    tournaments = Tournament.objects.filter(is_active=True).select_related('league')
+    return Response(TournamentSerializer(tournaments, many=True).data)
+
+@api_view(['GET'])
+def api_list_weeks(request):
+    tournament_id = request.query_params.get('tournament_id')
+    weeks = MatchWeek.objects.all()
+    if tournament_id:
+        weeks = weeks.filter(tournament_id=tournament_id)
+    return Response(MatchWeekSerializer(weeks, many=True).data)
+
+@api_view(['GET'])
+def api_list_matches(request):
+    week_id = request.query_params.get('week_id')
+    user_id = request.query_params.get('user_id')
+    pool_id = request.query_params.get('pool_id')
+
+    if not week_id:
+        return Response({'error': 'week_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
+    matches_data = MatchSerializer(matches, many=True).data
+
+    # Adjuntar el pick actual del usuario si aplica
+    if user_id and pool_id:
+        user_picks = {
+            p.match_id: {'pick': p.pick, 'is_correct': p.is_correct}
+            for p in Prediction.objects.filter(pool_id=pool_id, user_id=user_id, match__week_id=week_id)
+        }
+        for m in matches_data:
+            m['user_pick'] = user_picks.get(m['id'])
+
+    return Response(matches_data)
+
+# --- PREDICCIONES (PICKS) ---
+
+@api_view(['POST'])
+def api_save_prediction(request):
+    user_id = request.data.get('user_id')
+    pool_id = request.data.get('pool_id')
+    match_id = request.data.get('match_id')
+    pick = request.data.get('pick')  # 'HOME', 'AWAY', 'DRAW'
+
+    if not all([user_id, pool_id, match_id, pick]):
+        return Response({'error': 'Datos incompletos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        match = Match.objects.get(id=match_id)
+        user = User.objects.get(id=user_id)
+        pool = Pool.objects.get(id=pool_id)
+    except (Match.DoesNotExist, User.DoesNotExist, Pool.DoesNotExist):
+        return Response({'error': 'Registro no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Validar que no esté bloqueado (Lockout individual)
+    if match.is_locked:
+        return Response({
+            'error': f'El partido {match.home_team.name} vs {match.away_team.name} ya comenzó o finalizó. No es posible pronosticarlo.'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    pred, created = Prediction.objects.update_or_create(
+        pool=pool,
+        user=user,
+        match=match,
+        defaults={'pick': pick}
+    )
+
+    if match.status == 'FINAL' and match.winner:
+        pred.is_correct = (pred.pick == match.winner)
+        pred.save(update_fields=['is_correct'])
+
+    return Response({
+        'success': True,
+        'prediction': PredictionSerializer(pred).data
+    })
+
+# --- TABLA DE POSICIONES Y PODIO OLÍMPICO (STANDINGS) ---
+
+def calculate_standings_with_medals(memberships, week_id=None, tournament=None):
+    """
+    Calcula puntos de la semana y acumulados con ranking y medallas olímpicas.
+    Empates comparten posición.
+    """
+    standings = []
+    for mem in memberships:
+        user = mem.user
+        display_name = user.profile.display_name if hasattr(user, 'profile') else user.first_name or user.username
+        avatar_color = user.profile.avatar_color if hasattr(user, 'profile') else '#3B82F6'
+
+        # Puntos de la semana
+        weekly_hits = 0
+        weekly_total = 0
+        if week_id:
+            w_preds = Prediction.objects.filter(pool=mem.pool, user=user, match__week_id=week_id)
+            weekly_total = w_preds.count()
+            weekly_hits = w_preds.filter(is_correct=True).count()
+
+        # Puntos acumulados de todo el torneo
+        t_preds = Prediction.objects.filter(pool=mem.pool, user=user, match__week__tournament=mem.pool.tournament)
+        total_hits = t_preds.filter(is_correct=True).count()
+        total_picks = t_preds.count()
+
+        standings.append({
+            'user_id': user.id,
+            'username': user.username,
+            'display_name': display_name,
+            'avatar_color': avatar_color,
+            'role': mem.role,
+            'weekly_hits': weekly_hits,
+            'weekly_total': weekly_total,
+            'total_hits': total_hits,
+            'total_picks': total_picks,
+        })
+
+    # Asignar Rango y Medallas según los puntos
+    # NOTA: Las medallas SOLO aplican al acumulado (general), no a la tabla semanal por regla de negocio
+    def assign_ranks(items, score_key, rank_prefix, with_medals=False):
+        items.sort(key=lambda x: x[score_key], reverse=True)
+        for i, item in enumerate(items):
+            if i > 0 and item[score_key] == items[i - 1][score_key]:
+                item[f'{rank_prefix}_rank'] = items[i - 1][f'{rank_prefix}_rank']
+            else:
+                item[f'{rank_prefix}_rank'] = i + 1
+
+            rank = item[f'{rank_prefix}_rank']
+            if with_medals and item[score_key] > 0:
+                if rank == 1:
+                    item[f'{rank_prefix}_medal'] = 'gold'
+                elif rank == 2:
+                    item[f'{rank_prefix}_medal'] = 'silver'
+                elif rank == 3:
+                    item[f'{rank_prefix}_medal'] = 'bronze'
+                else:
+                    item[f'{rank_prefix}_medal'] = None
+            else:
+                item[f'{rank_prefix}_medal'] = None
+
+    assign_ranks(standings, 'weekly_hits', 'weekly', with_medals=False)
+    assign_ranks(standings, 'total_hits', 'general', with_medals=True)
+
+    return standings
+
+@api_view(['GET'])
+def api_pool_standings(request, pool_id):
+    week_id = request.query_params.get('week_id')
+    try:
+        pool = Pool.objects.select_related('tournament__league').get(id=pool_id)
+    except Pool.DoesNotExist:
+        return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Si no se pasó week_id, tomar la última semana
+    if not week_id:
+        latest_week = pool.tournament.weeks.order_by('-week_number').first()
+        week_id = latest_week.id if latest_week else None
+
+    memberships = pool.memberships.select_related('user__profile').all()
+    standings = calculate_standings_with_medals(memberships, week_id=week_id)
+
+    # Detalle de picks de la jornada (sólo para partidos bloqueados o finalizados)
+    locked_picks_matrix = []
+    if week_id:
+        week_matches = Match.objects.filter(week_id=week_id).order_by('date_time')
+        for m in week_matches:
+            match_entry = {
+                'match_id': m.id,
+                'home_team': m.home_team.short_name or m.home_team.name,
+                'away_team': m.away_team.short_name or m.away_team.name,
+                'winner': m.winner,
+                'is_locked': m.is_locked,
+                'status': m.status,
+                'picks': {}
+            }
+            # Solo revelamos los picks si el partido ya inició (para respetar la regla deportiva)
+            if m.is_locked:
+                preds = Prediction.objects.filter(pool=pool, match=m)
+                for p in preds:
+                    match_entry['picks'][p.user_id] = {
+                        'pick': p.pick,
+                        'is_correct': p.is_correct
+                    }
+            locked_picks_matrix.append(match_entry)
+
+    return Response({
+        'pool': PoolSerializer(pool).data,
+        'current_week_id': week_id,
+        'standings': standings,
+        'matches_breakdown': locked_picks_matrix
+    })
+
+# --- MONITOREO Y RECORDATORIOS (ADMIN) ---
+
+@api_view(['GET'])
+def api_pool_activity(request, pool_id):
+    week_id = request.query_params.get('week_id')
+    try:
+        pool = Pool.objects.get(id=pool_id)
+    except Pool.DoesNotExist:
+        return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    if not week_id:
+        latest_week = pool.tournament.weeks.order_by('-week_number').first()
+        week_id = latest_week.id if latest_week else None
+
+    total_matches = Match.objects.filter(week_id=week_id).count()
+    members = pool.memberships.select_related('user__profile').all()
+
+    activity = []
+    for mem in members:
+        user = mem.user
+        submitted_picks = Prediction.objects.filter(pool=pool, user=user, match__week_id=week_id).count()
+        is_complete = (submitted_picks >= total_matches) and total_matches > 0
+
+        activity.append({
+            'user_id': user.id,
+            'username': user.username,
+            'display_name': user.profile.display_name if hasattr(user, 'profile') else user.username,
+            'avatar_color': user.profile.avatar_color if hasattr(user, 'profile') else '#3B82F6',
+            'submitted_picks': submitted_picks,
+            'total_matches': total_matches,
+            'is_complete': is_complete,
+            'missing_picks': total_matches - submitted_picks
+        })
+
+    # Partidos próximos que están por iniciar
+    next_match = Match.objects.filter(week_id=week_id, date_time__gt=timezone.now()).order_by('date_time').first()
+
+    return Response({
+        'pool_id': pool.id,
+        'week_id': week_id,
+        'total_matches': total_matches,
+        'next_kickoff': next_match.date_time if next_match else None,
+        'members_activity': activity
+    })
+
+@api_view(['POST'])
+def api_send_auto_reminder(request, pool_id):
+    week_id = request.data.get('week_id')
+    try:
+        pool = Pool.objects.get(id=pool_id)
+    except Pool.DoesNotExist:
+        return Response({'error': 'Pool no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    total_matches = Match.objects.filter(week_id=week_id).count()
+    members = pool.memberships.select_related('user__profile').all()
+    reminded_users = []
+
+    for mem in members:
+        user = mem.user
+        picks_count = Prediction.objects.filter(pool=pool, user=user, match__week_id=week_id).count()
+        if picks_count < total_matches:
+            name = user.profile.display_name if hasattr(user, 'profile') else user.username
+            reminded_users.append({
+                'name': name,
+                'missing': total_matches - picks_count
+            })
+
+    return Response({
+        'success': True,
+        'message': f'Notificación automática generada para {len(reminded_users)} participantes pendientes.',
+        'reminded_users': reminded_users,
+        'timestamp': timezone.now()
+    })
+
+# --- SINCRONIZACIÓN ESPN ---
+
+@api_view(['POST'])
+def api_sync_espn(request):
+    league_code = request.data.get('league', 'NFL').upper()
+    week_number = request.data.get('week')
+
+    if league_code == 'NFL':
+        result = sync_espn_nfl(week_number=week_number)
+    else:
+        result = sync_espn_lmx()
+
+    return Response(result)
+
+# --- PORTAL DE ADMINISTRACIÓN EXCLUSIVO Y PROTEGIDO ---
+
+@api_view(['POST'])
+def api_admin_login(request):
+    username = request.data.get('username', '').strip()
+    password = request.data.get('password', '')
+
+    user = authenticate(username=username, password=password)
+    if not user:
+        return Response({'error': 'Credenciales de administrador inválidas.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if not (user.is_staff or user.is_superuser):
+        return Response({'error': 'Acceso denegado: esta cuenta no tiene permisos de administrador.'}, status=status.HTTP_403_FORBIDDEN)
+
+    return Response({
+        'admin_token': f'admin-token-{user.id}-{int(timezone.now().timestamp())}',
+        'admin_user': {
+            'id': user.id,
+            'username': user.username,
+            'name': user.first_name or user.username,
+            'is_superuser': user.is_superuser
+        }
+    })
+
+@api_view(['POST'])
+def api_admin_bulk_results(request):
+    """
+    Permite importar o actualizar resultados de múltiples partidos de una sola vez
+    y recalcular todos los aciertos del grupo instantáneamente.
+    """
+    match_updates = request.data.get('matches', [])
+    updated_count = 0
+
+    for item in match_updates:
+        match_id = item.get('match_id')
+        home_score = item.get('home_score')
+        away_score = item.get('away_score')
+        match_status = item.get('status', 'FINAL')
+
+        if match_id is not None and home_score is not None and away_score is not None:
+            try:
+                m = Match.objects.get(id=match_id)
+                m.update_result(int(home_score), int(away_score), status=match_status)
+                updated_count += 1
+            except Match.DoesNotExist:
+                continue
+
+    return Response({
+        'success': True,
+        'message': f'Se actualizaron con éxito los resultados de {updated_count} partidos y se recalcularon los puntos.',
+        'updated_count': updated_count
+    })
+
+@api_view(['GET'])
+def api_admin_get_participants(request):
+    """Lista todos los participantes registrados con sus pools asociadas."""
+    users = User.objects.filter(is_superuser=False).prefetch_related('pool_memberships__pool')
+    result = []
+    for u in users:
+        pools_joined = [m.pool.name for m in u.pool_memberships.all()]
+        result.append({
+            'id': u.id,
+            'username': u.username,
+            'display_name': u.profile.display_name if hasattr(u, 'profile') else u.first_name or u.username,
+            'email': u.email,
+            'pools': pools_joined,
+            'created_at': u.date_joined
+        })
+    return Response(result)
+
+@api_view(['POST'])
+def api_admin_create_participant(request):
+    """Crea manualmente un participante desde el panel de admin y lo une a las quinielas."""
+    name = request.data.get('name', '').strip()
+    username = request.data.get('username', '').strip().lower()
+    password = request.data.get('password', '1234')
+    pool_codes = request.data.get('pool_codes', []) # ej. ['NFL-FAMILIA', 'LMX-FAMILIA']
+
+    if not name or not username:
+        return Response({'error': 'El nombre y nombre de usuario son requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if User.objects.filter(username=username).exists():
+        return Response({'error': f'El usuario @{username} ya existe.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = User.objects.create_user(username=username, email=f"{username}@quinielas.app", password=password, first_name=name)
+    UserProfile.objects.create(user=user, display_name=name)
+
+    # Inscribir a pools solicitadas
+    assigned_pools = []
+    for code in pool_codes:
+        try:
+            pool = Pool.objects.get(invite_code__iexact=code)
+            PoolMembership.objects.create(pool=pool, user=user, role='MEMBER')
+            assigned_pools.append(pool.name)
+        except Pool.DoesNotExist:
+            continue
+
+    return Response({
+        'success': True,
+        'message': f'Participante {name} (@{username}) creado con éxito.',
+        'assigned_pools': assigned_pools,
+        'user_id': user.id
+    })
+
+@api_view(['DELETE'])
+def api_admin_delete_participant(request, user_id):
+    """Elimina a un participante y sus registros asociados."""
+    try:
+        user = User.objects.get(id=user_id, is_superuser=False)
+        name = user.first_name or user.username
+        user.delete()
+        return Response({'success': True, 'message': f'Participante {name} eliminado correctamente.'})
+    except User.DoesNotExist:
+        return Response({'error': 'Participante no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['POST'])
+def api_admin_save_participant_predictions(request):
+    """
+    Permite al administrador capturar o modificar los pronósticos de cualquier
+    participante para una jornada específica (incluso si los partidos ya iniciaron).
+    """
+    pool_id = request.data.get('pool_id')
+    user_id = request.data.get('user_id')
+    picks = request.data.get('picks', {})  # { match_id: 'HOME' | 'AWAY' | 'DRAW' }
+
+    if not pool_id or not user_id:
+        return Response({'error': 'pool_id y user_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        pool = Pool.objects.get(id=pool_id)
+        user = User.objects.get(id=user_id)
+    except (Pool.DoesNotExist, User.DoesNotExist):
+        return Response({'error': 'Quiniela o usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    saved_count = 0
+    for match_id_str, pick_val in picks.items():
+        if not pick_val:
+            continue
+        try:
+            match = Match.objects.get(id=int(match_id_str))
+            is_hit = None
+            if match.status == 'FINAL' and match.winner:
+                is_hit = (pick_val == match.winner)
+
+            pred, _ = Prediction.objects.update_or_create(
+                pool=pool,
+                user=user,
+                match=match,
+                defaults={
+                    'pick': pick_val,
+                    'is_correct': is_hit
+                }
+            )
+            saved_count += 1
+        except Match.DoesNotExist:
+            continue
+
+    display_name = user.profile.display_name if hasattr(user, 'profile') else user.username
+    return Response({
+        'success': True,
+        'message': f'Se guardaron {saved_count} pronósticos para {display_name}.',
+        'saved_count': saved_count
+    })
+
+@api_view(['GET'])
+def api_admin_get_week_predictions(request):
+    """
+    Retorna la matriz de pronósticos de todos los participantes para una jornada
+    permitiendo al administrador ver y editar los picks en una sola vista.
+    """
+    pool_id = request.query_params.get('pool_id')
+    week_id = request.query_params.get('week_id')
+
+    if not pool_id or not week_id:
+        return Response({'error': 'pool_id y week_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
+
+    matches = Match.objects.filter(week_id=week_id).order_by('date_time')
+    pool = Pool.objects.get(id=pool_id)
+    members = pool.memberships.select_related('user__profile').filter(user__is_superuser=False)
+
+    users_data = []
+    for mem in members:
+        user = mem.user
+        preds = {p.match_id: p.pick for p in Prediction.objects.filter(pool=pool, user=user, match__week_id=week_id)}
+        users_data.append({
+            'user_id': user.id,
+            'display_name': user.profile.display_name if hasattr(user, 'profile') else user.username,
+            'username': user.username,
+            'picks': preds
+        })
+
+    return Response({
+        'matches': MatchSerializer(matches, many=True).data,
+        'participants': users_data
+    })
+
+
