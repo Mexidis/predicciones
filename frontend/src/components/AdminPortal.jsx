@@ -277,10 +277,12 @@ export default function AdminPortal({
   const handleSetPickForMatch = (matchId, pickVal) => {
     setParticipantPicks(prev => {
       const next = { ...prev };
-      if (next[matchId] === pickVal) {
+      const key = matchId.toString();
+      if (next[key] === pickVal || next[matchId] === pickVal) {
+        delete next[key];
         delete next[matchId];
       } else {
-        next[matchId] = pickVal;
+        next[key] = pickVal;
       }
       return next;
     });
@@ -787,7 +789,7 @@ export default function AdminPortal({
 
                 <div className="divide-y divide-slate-100 dark:divide-white/5">
                   {adminMatches.map((m) => {
-                    const chosen = participantPicks[m.id];
+                    const chosen = participantPicks[m.id] || participantPicks[m.id.toString()];
 
                     return (
                       <div key={m.id} className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50 dark:hover:bg-white/[0.01]">

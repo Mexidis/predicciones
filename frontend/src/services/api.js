@@ -257,7 +257,7 @@ export const api = {
     return await res.json();
   },
 
-  async adminSaveParticipantPicks(poolId, userId, picks) {
+  async adminSaveParticipantPredictions(poolId, userId, picks) {
     clearClientCache();
     const res = await fetch(`${API_BASE}/admin-portal/predictions/bulk-save/`, {
       method: 'POST',
@@ -267,9 +267,13 @@ export const api = {
     return await res.json();
   },
 
-  async adminGetPredictionsMatrix(weekId, poolId) {
+  async adminSaveParticipantPicks(poolId, userId, picks) {
+    return this.adminSaveParticipantPredictions(poolId, userId, picks);
+  },
+
+  async adminGetPredictionsMatrix(poolId, weekId) {
     try {
-      const res = await fetch(`${API_BASE}/admin-portal/predictions/matrix/?week_id=${weekId}&pool_id=${poolId}`);
+      const res = await fetch(`${API_BASE}/admin-portal/predictions/matrix/?pool_id=${poolId}&week_id=${weekId}`);
       if (res.ok) return await res.json();
     } catch (e) {}
     return { matches: [], participants: [] };

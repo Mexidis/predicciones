@@ -651,8 +651,16 @@ def api_admin_get_week_predictions(request):
     if not pool_id or not week_id:
         return Response({'error': 'pool_id y week_id requeridos'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Si por algún motivo los parámetros vienen invertidos
+    if not Pool.objects.filter(id=pool_id).exists() and Pool.objects.filter(id=week_id).exists():
+        pool_id, week_id = week_id, pool_id
+
+    try:
+        pool = Pool.objects.get(id=pool_id)
+    except Pool.DoesNotExist:
+        return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
     matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
-    pool = Pool.objects.get(id=pool_id)
     members = pool.memberships.select_related('user__profile').filter(user__is_superuser=False)
 
     # Una sola consulta para todas las predicciones de la jornada
