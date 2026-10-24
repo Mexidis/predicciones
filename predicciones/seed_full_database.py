@@ -88,12 +88,11 @@ def seed():
         users_map[m["username"]] = u
 
     # Admin user
-    admin_u, created = User.objects.get_or_create(username="admin")
-    if created:
-        admin_u.set_password("admin")
-        admin_u.is_staff = True
-        admin_u.is_superuser = True
-        admin_u.save()
+    admin_u, _ = User.objects.get_or_create(username="admin")
+    admin_u.set_password("admin")
+    admin_u.is_staff = True
+    admin_u.is_superuser = True
+    admin_u.save()
     UserProfile.objects.get_or_create(
         user=admin_u,
         defaults={"display_name": "Administrador", "avatar_color": "#4F46E5"}
