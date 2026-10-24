@@ -303,6 +303,7 @@ def calculate_standings_with_medals(pool, memberships, week_id=None):
         for row in Prediction.objects.filter(pool=pool).values('user_id').annotate(
             weekly_hits=Count('id', filter=Q(match__week_id=week_id, is_correct=True)),
             weekly_total=Count('id', filter=Q(match__week_id=week_id)),
+            active_hits=Count('id', filter=Q(match__week__is_closed=False, is_correct=True)),
             total_hits=Count('id', filter=Q(is_correct=True)),
             total_picks=Count('id')
         )
@@ -318,8 +319,9 @@ def calculate_standings_with_medals(pool, memberships, week_id=None):
         weekly_hits = stats.get('weekly_hits', 0) if week_id else 0
         weekly_total = stats.get('weekly_total', 0) if week_id else 0
         calculated_hits = stats.get('total_hits', 0)
+        active_hits = stats.get('active_hits', 0)
         manual_pts = getattr(mem, 'manual_points', 0) or 0
-        total_hits = max(calculated_hits, manual_pts)
+        total_hits = max(calculated_hits, manual_pts + active_hits)
         total_picks = stats.get('total_picks', 0)
 
         standings.append({
