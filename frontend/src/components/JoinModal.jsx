@@ -8,7 +8,7 @@ export default function JoinModal({
   defaultInviteCode,
   onUserRegistered
 }) {
-  const [isLogin, setIsLogin] = useState(false); // Por defecto registrarse desde cero
+  const [isLogin, setIsLogin] = useState(true); // Por defecto Iniciar Sesión con PIN para los integrantes actuales
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [inviteCode, setInviteCode] = useState(defaultInviteCode || '');
@@ -64,6 +64,15 @@ export default function JoinModal({
         });
 
         if (res.error) {
+          // Si el integrante ya existe en la base de datos, intentar iniciar sesión automáticamente con su PIN
+          if (res.error.toLowerCase().includes('ya existe') || res.error.toLowerCase().includes('already exists')) {
+            const loginAttempt = await api.login(cleanName, password);
+            if (!loginAttempt.error && loginAttempt.user) {
+              onUserRegistered(loginAttempt.user);
+              onClose();
+              return;
+            }
+          }
           setError(res.error);
         } else {
           onUserRegistered(res.user);
@@ -108,19 +117,8 @@ export default function JoinModal({
           </p>
         </div>
 
-        {/* Selector de Pestaña Registro / Login */}
+        {/* Selector de Pestaña Login / Registro */}
         <div className="grid grid-cols-2 p-1 bg-slate-100 dark:bg-[#090C1A] rounded-2xl border border-slate-200 dark:border-indigo-500/20 mb-4">
-          <button
-            type="button"
-            onClick={() => { setIsLogin(false); setError(null); }}
-            className={`py-2 rounded-xl text-xs font-bold font-sport uppercase tracking-wider transition ${
-              !isLogin
-                ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 text-white shadow-md'
-                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            Darse de Alta
-          </button>
           <button
             type="button"
             onClick={() => { setIsLogin(true); setError(null); }}
@@ -131,6 +129,17 @@ export default function JoinModal({
             }`}
           >
             Iniciar Sesión
+          </button>
+          <button
+            type="button"
+            onClick={() => { setIsLogin(false); setError(null); }}
+            className={`py-2 rounded-xl text-xs font-bold font-sport uppercase tracking-wider transition ${
+              !isLogin
+                ? 'bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600 text-white shadow-md'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            Darse de Alta
           </button>
         </div>
 

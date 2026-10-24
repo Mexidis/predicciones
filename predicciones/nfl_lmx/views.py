@@ -624,13 +624,19 @@ def api_admin_save_participant_predictions(request):
         if not pick_val:
             continue
         try:
-            match = Match.objects.get(id=int(match_id_str))
+            match = Match.objects.select_related('week__tournament').get(id=int(match_id_str))
+            target_pool = pool
+            if match.week and match.week.tournament:
+                match_pool = Pool.objects.filter(tournament=match.week.tournament).first()
+                if match_pool:
+                    target_pool = match_pool
+
             is_hit = None
             if match.status == 'FINAL' and match.winner:
                 is_hit = (pick_val == match.winner)
 
             pred, _ = Prediction.objects.update_or_create(
-                pool=pool,
+                pool=target_pool,
                 user=user,
                 match=match,
                 defaults={
