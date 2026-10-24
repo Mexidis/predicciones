@@ -238,6 +238,32 @@ def get_or_create_lmx_team(league_lmx, comp_team):
         espn_id=espn_id or None
     )
 
+def resolve_espn_match_status(event):
+    """
+    Interpreta el estado del partido desde ESPN de forma universal para Soccer y NFL.
+    Soporta:
+      - FINAL: STATUS_FINAL, STATUS_FULL_TIME, FT, AFTER_ET, AFTER_PENALTIES, state: 'post', completed: True
+      - IN_PROGRESS: STATUS_IN_PROGRESS, STATUS_FIRST_HALF, STATUS_SECOND_HALF, STATUS_HALFTIME, state: 'in'
+      - POSTPONED: STATUS_POSTPONED, STATUS_SUSPENDED, STATUS_DELAYED, state: 'postponed'
+      - CANCELED: STATUS_CANCELED, STATUS_ABANDONED, state: 'canceled'
+      - SCHEDULED: STATUS_SCHEDULED, state: 'pre'
+    """
+    status_info = event.get('status', {})
+    status_type = status_info.get('type', {})
+    status_name = str(status_type.get('name', 'STATUS_SCHEDULED')).upper()
+    status_state = str(status_type.get('state', 'pre')).lower()
+    is_completed = bool(status_type.get('completed', False))
+
+    if is_completed or status_state == 'post' or any(k in status_name for k in ['FINAL', 'FULL_TIME', 'STATUS_FT', 'AFTER_ET', 'AFTER_PENALTIES']):
+        return 'FINAL'
+    elif status_state == 'in' or any(k in status_name for k in ['PROGRESS', 'FIRST_HALF', 'SECOND_HALF', 'HALFTIME', 'EXTRA_TIME', 'OVERTIME']):
+        return 'IN_PROGRESS'
+    elif any(k in status_name for k in ['POSTPONED', 'SUSPENDED', 'DELAYED']) or status_state == 'postponed':
+        return 'POSTPONED'
+    elif any(k in status_name for k in ['CANCELED', 'ABANDONED']) or status_state == 'canceled':
+        return 'CANCELED'
+    return 'SCHEDULED'
+
 def find_or_create_match(week_obj, home_team, away_team, espn_id, kickoff):
     """
     Busca un partido en la semana evitando duplicados causados por inversión de local/visita
@@ -321,15 +347,7 @@ def sync_espn_nfl(week_number=None, year=None):
         kickoff_raw = event.get('date')
         kickoff = parse_datetime(kickoff_raw) if kickoff_raw else timezone.now()
 
-        status_type = event.get('status', {}).get('type', {}).get('name', 'STATUS_SCHEDULED')
-        if 'FINAL' in status_type:
-            status = 'FINAL'
-        elif 'IN_PROGRESS' in status_type:
-            status = 'IN_PROGRESS'
-        elif 'POSTPONED' in status_type:
-            status = 'POSTPONED'
-        else:
-            status = 'SCHEDULED'
+        status = resolve_espn_match_status(event)
 
         competition = event.get('competitions', [{}])[0]
         competitors = competition.get('competitors', [])
@@ -368,10 +386,14 @@ def sync_espn_nfl(week_number=None, year=None):
                 match.home_score = h_score
                 match.away_score = a_score
                 match.save()
+        elif status in ['POSTPONED', 'CANCELED']:
+            match.status = status
+            match.save(update_fields=['status', 'date_time'])
         else:
             match.status = status
             match.home_score = None
             match.away_score = None
+            match.winner = None
             match.save()
 
         updated_matches += 1
@@ -452,15 +474,7 @@ def sync_espn_lmx(week_number=None, date_str=None):
         kickoff_raw = event.get('date')
         kickoff = parse_datetime(kickoff_raw) if kickoff_raw else timezone.now()
 
-        status_type = event.get('status', {}).get('type', {}).get('name', 'STATUS_SCHEDULED')
-        if 'FINAL' in status_type:
-            status = 'FINAL'
-        elif 'IN_PROGRESS' in status_type:
-            status = 'IN_PROGRESS'
-        elif 'POSTPONED' in status_type:
-            status = 'POSTPONED'
-        else:
-            status = 'SCHEDULED'
+        status = resolve_espn_match_status(event)
 
         competition = event.get('competitions', [{}])[0]
         competitors = competition.get('competitors', [])
@@ -500,26 +514,31 @@ def sync_espn_lmx(week_number=None, date_str=None):
                 match.home_score = h_score
                 match.away_score = a_score
                 match.save()
+        elif status in ['POSTPONED', 'CANCELED']:
+            match.status = status
+            match.save(update_fields=['status', 'date_time'])
         else:
             match.status = status
             match.home_score = None
             match.away_score = None
+            match.winner = None
             match.save()
 
         updated_matches += 1
 
-    # Asegurar que todos los partidos de la jornada tengan su racha oficial actualizada
+    # Asegurar que todos los partidos de la jornada tengan su racha oficial si aún no la tienen
     for m in week_obj.matches.all():
-        hf = fetch_lmx_team_form(m.home_team.espn_id)
-        af = fetch_lmx_team_form(m.away_team.espn_id)
-        changed = False
-        if hf and m.home_form != hf:
-            m.home_form = hf
-            changed = True
-        if af and m.away_form != af:
-            m.away_form = af
-            changed = True
-        if changed:
-            m.save()
+        if not m.home_form or not m.away_form:
+            hf = fetch_lmx_team_form(m.home_team.espn_id) if not m.home_form else None
+            af = fetch_lmx_team_form(m.away_team.espn_id) if not m.away_form else None
+            changed = False
+            if hf and m.home_form != hf:
+                m.home_form = hf
+                changed = True
+            if af and m.away_form != af:
+                m.away_form = af
+                changed = True
+            if changed:
+                m.save()
 
     return {"status": "ok", "week": week_obj.week_number, "matches_updated": updated_matches}

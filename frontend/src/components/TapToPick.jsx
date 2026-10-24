@@ -122,10 +122,26 @@ export default function TapToPick({
                   </div>
 
                   <div className="flex items-center gap-1.5">
-                    {isLocked && !isFinal && (
+                    {m.status === 'POSTPONED' && (
+                      <span className="flex items-center gap-1 text-[10px] font-bold font-sport uppercase tracking-wider text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-500/15 px-2.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-500/30">
+                        Pospuesto
+                      </span>
+                    )}
+                    {m.status === 'CANCELED' && (
+                      <span className="flex items-center gap-1 text-[10px] font-bold font-sport uppercase tracking-wider text-rose-700 dark:text-rose-300 bg-rose-100 dark:bg-rose-500/15 px-2.5 py-0.5 rounded-full border border-rose-200 dark:border-rose-500/30">
+                        Cancelado
+                      </span>
+                    )}
+                    {m.status === 'IN_PROGRESS' && (
+                      <span className="flex items-center gap-1 text-[10px] font-bold font-sport uppercase tracking-wider text-emerald-700 dark:text-turf-300 bg-emerald-100 dark:bg-turf-500/15 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-turf-500/30 animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping mr-0.5" />
+                        En juego {m.home_score !== null && m.away_score !== null ? `(${m.home_score} - ${m.away_score})` : ''}
+                      </span>
+                    )}
+                    {isLocked && m.status === 'SCHEDULED' && (
                       <span className="flex items-center gap-1 text-[10px] font-bold font-sport uppercase tracking-wider text-indigo-700 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-500/15 px-2.5 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-500/30">
                         <Lock className="w-2.5 h-2.5" />
-                        En juego
+                        Iniciando
                       </span>
                     )}
                     {isFinal && (

@@ -61,6 +61,7 @@ class Match(models.Model):
         ('IN_PROGRESS', 'En Juego'),
         ('FINAL', 'Finalizado'),
         ('POSTPONED', 'Pospuesto'),
+        ('CANCELED', 'Cancelado'),
     ]
     WINNER_CHOICES = [
         ('HOME', 'Local'),
@@ -89,6 +90,8 @@ class Match(models.Model):
     @property
     def is_locked(self):
         """El partido se bloquea en cuanto inicia el silbatazo/kickoff o si ya no está programado."""
+        if self.status in ['POSTPONED', 'CANCELED']:
+            return False
         return timezone.now() >= self.date_time or self.status in ['IN_PROGRESS', 'FINAL']
 
     def update_result(self, home_score, away_score, status='FINAL'):

@@ -5,6 +5,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.utils import timezone
 from django.db.models import Count, Q
+from django.core.cache import cache
 from .models import (
     Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile
 )
@@ -182,6 +183,42 @@ def api_list_weeks(request):
     response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
     return response
 
+# Control de enfriamiento para sincronización automática con ESPN (3 minutos por jornada activa)
+def trigger_smart_espn_sync(week_obj):
+    """
+    Sincronización pasiva e inteligente con ESPN.
+    - Se ejecuta ÚNICAMENTE si la jornada tiene partidos en juego o que ya iniciaron y no están finalizados.
+    - Si todos los partidos ya terminaron o están en el futuro, no hace nada (0 llamadas a ESPN).
+    - Aplica una ventana de enfriamiento de 3 minutos (180s) entre consultas vía Django Cache.
+    """
+    if not week_obj or week_obj.is_closed:
+        return False
+
+    now = timezone.now()
+    has_active_or_due = week_obj.matches.filter(
+        Q(status='IN_PROGRESS') | Q(status='SCHEDULED', date_time__lte=now)
+    ).exists()
+
+    if not has_active_or_due:
+        return False
+
+    league_code = week_obj.tournament.league.code if (week_obj.tournament and week_obj.tournament.league) else 'LMX'
+    cache_key = f"espn_auto_sync_{league_code}_{week_obj.id}"
+
+    if cache.get(cache_key):
+        return False
+
+    cache.set(cache_key, True, timeout=180)  # 3 minutos de enfriamiento
+    try:
+        if league_code == 'NFL':
+            sync_espn_nfl(week_number=week_obj.week_number)
+        else:
+            sync_espn_lmx(week_number=week_obj.week_number)
+        return True
+    except Exception as e:
+        print(f"Auto-sync ESPN error for {cache_key}: {e}")
+        return False
+
 @api_view(['GET'])
 def api_list_matches(request):
     week_id = request.query_params.get('week_id')
@@ -190,6 +227,10 @@ def api_list_matches(request):
 
     if not week_id:
         return Response({'error': 'week_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
+
+    week_obj = MatchWeek.objects.select_related('tournament__league').filter(id=week_id).first()
+    if week_obj:
+        trigger_smart_espn_sync(week_obj)
 
     matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
     matches_data = MatchSerializer(matches, many=True).data
@@ -333,6 +374,11 @@ def api_pool_standings(request, pool_id):
         latest_week = pool.tournament.weeks.order_by('-week_number').first()
         week_id = latest_week.id if latest_week else None
 
+    if week_id:
+        target_week = MatchWeek.objects.select_related('tournament__league').filter(id=week_id).first()
+        if target_week:
+            trigger_smart_espn_sync(target_week)
+
     memberships = pool.memberships.select_related('user__profile').all()
     standings = calculate_standings_with_medals(pool, memberships, week_id=week_id)
 
@@ -391,6 +437,11 @@ def api_pool_activity(request, pool_id):
     if not week_id:
         latest_week = pool.tournament.weeks.order_by('-week_number').first()
         week_id = latest_week.id if latest_week else None
+
+    if week_id:
+        target_week = MatchWeek.objects.select_related('tournament__league').filter(id=week_id).first()
+        if target_week:
+            trigger_smart_espn_sync(target_week)
 
     total_matches = Match.objects.filter(week_id=week_id).count() if week_id else 0
     members = pool.memberships.select_related('user__profile').all()
