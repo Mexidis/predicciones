@@ -1,11 +1,57 @@
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:8000/api').replace(/\/+$/, '');
 
+// Memoria y SessionStorage Cache con TTL
+const memoryCache = new Map();
+
+function getCached(key, maxAgeMs = 120000) {
+  const mem = memoryCache.get(key);
+  if (mem && (Date.now() - mem.time < maxAgeMs)) {
+    return mem.data;
+  }
+  try {
+    const raw = sessionStorage.getItem('quiniela_' + key);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Date.now() - parsed.time < maxAgeMs) {
+        memoryCache.set(key, parsed);
+        return parsed.data;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function setCached(key, data) {
+  const item = { time: Date.now(), data };
+  memoryCache.set(key, item);
+  try {
+    sessionStorage.setItem('quiniela_' + key, JSON.stringify(item));
+  } catch (e) {}
+}
+
+export function clearClientCache(prefix = '') {
+  memoryCache.clear();
+  try {
+    Object.keys(sessionStorage).forEach(k => {
+      if (k.startsWith('quiniela_' + prefix)) {
+        sessionStorage.removeItem(k);
+      }
+    });
+  } catch (e) {}
+}
+
 export const api = {
   // Autenticación y Usuarios
   async getUsers() {
+    const cached = getCached('users', 300000);
+    if (cached) return cached;
     try {
       const res = await fetch(`${API_BASE}/auth/users/`);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        setCached('users', data);
+        return data;
+      }
     } catch (e) {
       console.warn("API offline, usando fallback local", e);
     }
@@ -18,7 +64,11 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
-    return await res.json();
+    const data = await res.json();
+    if (data && data.user) {
+      clearClientCache('matches_');
+    }
+    return data;
   },
 
   async register(data) {
@@ -27,7 +77,11 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    return await res.json();
+    const resData = await res.json();
+    if (resData && resData.user) {
+      clearClientCache();
+    }
+    return resData;
   },
 
   async changeUserPin(userId, currentPin, newPin, username) {
@@ -41,15 +95,23 @@ export const api = {
 
   // Pools
   async getPools(userId) {
+    const cacheKey = 'pools_' + (userId || 'all');
+    const cached = getCached(cacheKey, 180000);
+    if (cached) return cached;
     try {
       const url = userId ? `${API_BASE}/pools/?user_id=${userId}` : `${API_BASE}/pools/`;
       const res = await fetch(url);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        setCached(cacheKey, data);
+        return data;
+      }
     } catch (e) {}
     return null;
   },
 
   async joinPool(userId, inviteCode) {
+    clearClientCache('pools_');
     const res = await fetch(`${API_BASE}/pools/join/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -60,25 +122,41 @@ export const api = {
 
   // Partidos y Semanas
   async getWeeks(tournamentId) {
+    const cacheKey = 'weeks_' + (tournamentId || 'all');
+    const cached = getCached(cacheKey, 180000);
+    if (cached) return cached;
     try {
       const url = tournamentId ? `${API_BASE}/weeks/?tournament_id=${tournamentId}` : `${API_BASE}/weeks/`;
       const res = await fetch(url);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        setCached(cacheKey, data);
+        return data;
+      }
     } catch (e) {}
     return null;
   },
 
   async getMatches(weekId, userId, poolId) {
+    const cacheKey = `matches_${weekId}_${userId || ''}_${poolId || ''}`;
+    const cached = getCached(cacheKey, 45000);
+    if (cached) return cached;
     try {
       const url = `${API_BASE}/matches/?week_id=${weekId}&user_id=${userId || ''}&pool_id=${poolId || ''}`;
       const res = await fetch(url);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        setCached(cacheKey, data);
+        return data;
+      }
     } catch (e) {}
     return null;
   },
 
   // Guardar Pick
   async savePrediction(userId, poolId, matchId, pick) {
+    clearClientCache('matches_');
+    clearClientCache('standings_');
     const res = await fetch(`${API_BASE}/predictions/save/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -89,10 +167,17 @@ export const api = {
 
   // Posiciones (Standings)
   async getPoolStandings(poolId, weekId) {
+    const cacheKey = `standings_${poolId}_${weekId || 'all'}`;
+    const cached = getCached(cacheKey, 45000);
+    if (cached) return cached;
     try {
       const url = weekId ? `${API_BASE}/pools/${poolId}/standings/?week_id=${weekId}` : `${API_BASE}/pools/${poolId}/standings/`;
       const res = await fetch(url);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        setCached(cacheKey, data);
+        return data;
+      }
     } catch (e) {}
     return null;
   },
@@ -115,8 +200,9 @@ export const api = {
     return await res.json();
   },
 
-  // Sincronizar ESPN
+  // Sincronización ESPN (Manual / Admin)
   async syncEspn(leagueCode, weekNumber) {
+    clearClientCache();
     const res = await fetch(`${API_BASE}/sync/espn/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -125,12 +211,22 @@ export const api = {
     return await res.json();
   },
 
-  // Portal de Administración Exclusivo
+  // Panel de Administración
   async adminLogin(username, password) {
     const res = await fetch(`${API_BASE}/admin-portal/login/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
+    });
+    return await res.json();
+  },
+
+  async adminBulkResults(matches) {
+    clearClientCache();
+    const res = await fetch(`${API_BASE}/admin-portal/bulk-results/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matches })
     });
     return await res.json();
   },
@@ -144,6 +240,7 @@ export const api = {
   },
 
   async adminCreateParticipant(name, username, password, poolCodes) {
+    clearClientCache();
     const res = await fetch(`${API_BASE}/admin-portal/participants/create/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -153,22 +250,15 @@ export const api = {
   },
 
   async adminDeleteParticipant(userId) {
+    clearClientCache();
     const res = await fetch(`${API_BASE}/admin-portal/participants/${userId}/`, {
       method: 'DELETE'
     });
     return await res.json();
   },
 
-  async adminBulkResults(matches) {
-    const res = await fetch(`${API_BASE}/admin-portal/bulk-results/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ matches })
-    });
-    return await res.json();
-  },
-
-  async adminSaveParticipantPredictions(poolId, userId, picks) {
+  async adminSaveParticipantPicks(poolId, userId, picks) {
+    clearClientCache();
     const res = await fetch(`${API_BASE}/admin-portal/predictions/bulk-save/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -177,14 +267,13 @@ export const api = {
     return await res.json();
   },
 
-  async adminGetPredictionsMatrix(poolId, weekId) {
+  async adminGetPredictionsMatrix(weekId, poolId) {
     try {
-      const res = await fetch(`${API_BASE}/admin-portal/predictions/matrix/?pool_id=${poolId}&week_id=${weekId}`);
+      const res = await fetch(`${API_BASE}/admin-portal/predictions/matrix/?week_id=${weekId}&pool_id=${poolId}`);
       if (res.ok) return await res.json();
     } catch (e) {}
     return { matches: [], participants: [] };
-  }
-,
+  },
 
   async adminChangePassword(currentPassword, newPassword, username = 'admin') {
     const res = await fetch(`${API_BASE}/admin-portal/change-password/`, {
@@ -195,7 +284,17 @@ export const api = {
     return await res.json();
   },
 
+  async repairDatabase() {
+    clearClientCache();
+    const res = await fetch(`${API_BASE}/admin-portal/repair-database/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    return await res.json();
+  },
+
   async adminResetParticipantPin(userId, newPin) {
+    clearClientCache();
     const res = await fetch(`${API_BASE}/admin-portal/participants/${userId}/reset-pin/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -213,6 +312,7 @@ export const api = {
   },
 
   async adminSavePoolPoints(poolId, points) {
+    clearClientCache('standings_');
     const res = await fetch(API_BASE + '/admin-portal/points/bulk-save/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

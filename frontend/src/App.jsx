@@ -105,6 +105,13 @@ export default function App() {
 
   // 3. Cargar Pools según liga
   useEffect(() => {
+    if (pools.length > 0) {
+      const matchPool = pools.find(p => p.tournament?.league?.code === currentLeague) || pools[0];
+      if (matchPool && matchPool.id !== selectedPool?.id) {
+        setSelectedPool(matchPool);
+      }
+      return;
+    }
     async function loadPools() {
       const data = await api.getPools();
       if (data && data.length > 0) {
@@ -114,7 +121,7 @@ export default function App() {
       }
     }
     loadPools();
-  }, [currentLeague]);
+  }, [currentLeague, pools]);
 
   // 4. Cargar Semanas del Torneo con selección inteligente de jornada activa
   useEffect(() => {
@@ -224,12 +231,6 @@ export default function App() {
   const handleLeagueChange = (leagueCode) => {
     if (leagueCode === currentLeague) return;
     setCurrentLeague(leagueCode);
-    setMatches([]);
-    setWeeks([]);
-    setSelectedWeek(null);
-    setStandings([]);
-    setMatchesBreakdown([]);
-    setUserPicks({});
     setIsLoading(true);
 
     const pool = pools.find(p => p.tournament?.league?.code === leagueCode);
@@ -245,7 +246,6 @@ export default function App() {
 
   const handleSelectWeek = (w) => {
     if (selectedWeek?.id === w.id) return;
-    setMatches([]);
     setIsLoading(true);
     setSelectedWeek(w);
   };
@@ -258,6 +258,20 @@ export default function App() {
     setCurrentUser(newUser);
     localStorage.setItem('quiniela_user_session', JSON.stringify(newUser));
     showToast(`¡Hola, ${newUser.display_name}! Sesión iniciada.`);
+
+    // Actualizar picks del usuario en segundo plano sin reiniciar la pantalla
+    if (selectedWeek?.id && selectedPool?.id) {
+      api.getMatches(selectedWeek.id, newUser.id, selectedPool.id).then(matchesData => {
+        if (matchesData) {
+          setMatches(matchesData);
+          const picksMap = {};
+          matchesData.forEach(m => {
+            if (m.user_pick) picksMap[m.id] = m.user_pick;
+          });
+          setUserPicks(picksMap);
+        }
+      }).catch(() => {});
+    }
   };
 
   const handleUserLogout = () => {

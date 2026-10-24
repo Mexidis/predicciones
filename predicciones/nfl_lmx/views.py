@@ -137,7 +137,9 @@ def api_list_pools(request):
         pools = Pool.objects.filter(memberships__user_id=user_id).select_related('tournament__league')
     else:
         pools = Pool.objects.all().select_related('tournament__league')
-    return Response(PoolSerializer(pools, many=True).data)
+    response = Response(PoolSerializer(pools, many=True).data)
+    response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+    return response
 
 @api_view(['POST'])
 def api_join_pool(request):
@@ -175,7 +177,10 @@ def api_list_weeks(request):
     weeks = MatchWeek.objects.all()
     if tournament_id:
         weeks = weeks.filter(tournament_id=tournament_id)
-    return Response(MatchWeekSerializer(weeks, many=True).data)
+    weeks = weeks.annotate(matches_count=Count('matches')).order_by('week_number')
+    response = Response(MatchWeekSerializer(weeks, many=True).data)
+    response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+    return response
 
 @api_view(['GET'])
 def api_list_matches(request):
@@ -199,7 +204,9 @@ def api_list_matches(request):
         for m in matches_data:
             m['user_pick'] = user_picks.get(m['id'])
 
-    return Response(matches_data)
+    response = Response(matches_data)
+    response['Cache-Control'] = 'public, max-age=15, stale-while-revalidate=60'
+    return response
 
 # --- PREDICCIONES (PICKS) ---
 
@@ -362,12 +369,14 @@ def api_pool_standings(request, pool_id):
             }
             locked_picks_matrix.append(match_entry)
 
-    return Response({
+    response = Response({
         'pool': PoolSerializer(pool).data,
         'current_week_id': week_id,
         'standings': standings,
         'matches_breakdown': locked_picks_matrix
     })
+    response['Cache-Control'] = 'public, max-age=15, stale-while-revalidate=60'
+    return response
 
 # --- MONITOREO Y RECORDATORIOS (ADMIN) ---
 
