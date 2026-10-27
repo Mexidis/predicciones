@@ -55,6 +55,20 @@ export default function App() {
 
   // Secuenciador monotónico para evitar que respuestas en vuelo de otra liga/jornada crucen datos
   const requestSeqRef = useRef(0);
+  const activeWeekBtnRef = useRef(null);
+
+  // Auto-centrar el botón de la jornada seleccionada en la barra horizontal
+  useEffect(() => {
+    if (activeWeekBtnRef.current) {
+      try {
+        activeWeekBtnRef.current.scrollIntoView({
+          behavior: 'smooth',
+          inline: 'center',
+          block: 'nearest',
+        });
+      } catch {}
+    }
+  }, [selectedWeek?.id, currentLeague]);
 
   // Gestión de clase dark / light en la etiqueta html
   useEffect(() => {
@@ -273,13 +287,12 @@ export default function App() {
     showToast('Sesión cerrada');
   };
 
-  // Filtrar jornadas relevantes para el selector (con partidos registrados o abiertas de la fase actual)
-  const visibleWeeks = weeks.filter(w => (w.matches_count || 0) > 0 && (w.week_number >= (currentLeague === 'LMX' ? 13 : 7)));
-  const weeksToRender = visibleWeeks.length > 0 ? visibleWeeks : weeks.filter(w => (w.matches_count || 0) > 0 || !w.is_closed);
+  // Mostrar TODAS las jornadas del torneo (pasadas, actual y futuras) para poder consultar todo el historial y adelantar picks
+  const weeksToRender = weeks;
 
   // Detectar si existe una siguiente jornada próxima con partidos registrados para adelantar pronósticos
   const nextUpcomingWeek = weeksToRender.find(
-    w => selectedWeek && w.week_number > selectedWeek.week_number && (w.scheduled_matches_count || 0) > 0
+    w => selectedWeek && w.week_number > selectedWeek.week_number && !w.is_closed && (w.scheduled_matches_count || 0) > 0
   );
 
   // Si está en el portal de administración protegido
@@ -342,6 +355,7 @@ export default function App() {
                 return (
                   <button
                     key={w.id}
+                    ref={isSelected ? activeWeekBtnRef : null}
                     onClick={() => handleSelectWeek(w)}
                     className={`px-3.5 py-1.5 rounded-xl text-xs font-black font-sport uppercase tracking-wider transition-all flex items-center gap-1.5 flex-shrink-0 active:scale-95 ${
                       isSelected

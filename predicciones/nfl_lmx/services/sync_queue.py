@@ -236,16 +236,13 @@ def schedule_periodic_sync_checks():
     """
     now = timezone.now()
 
-    # 1. Revisar si hay jornadas futuras vacías
-    empty_upcoming_weeks = (
+    # 1. Revisar si hay jornadas pasadas o futuras vacías (1-17 LMX, 1-18 NFL)
+    empty_weeks = (
         MatchWeek.objects.annotate(m_count=Count('matches'))
-        .filter(
-            Q(tournament__league__code='LMX', week_number__gte=13, m_count=0)
-            | Q(tournament__league__code='NFL', week_number__gte=7, m_count=0)
-        )
+        .filter(m_count=0)
         .select_related('tournament__league')
     )
-    if empty_upcoming_weeks.exists():
+    if empty_weeks.exists():
         enqueue_sync_job(
             job_type='SYNC_UPCOMING_CALENDAR',
             league_code='ALL',

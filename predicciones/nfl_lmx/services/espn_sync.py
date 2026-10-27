@@ -601,24 +601,48 @@ def sync_espn_lmx(week_number=None, date_str=None, fetch_forms=True):
 
 def sync_upcoming_calendar(league_code='ALL', fetch_forms=False):
     """
-    Sincroniza de antemano todas las jornadas activas y futuras del torneo
-    para que los partidos de las siguientes jornadas estén siempre registrados y actualizados.
+    Sincroniza todas las jornadas del torneo (tanto pasadas que estén incompletas
+    como la jornada activa y todas las siguientes jornadas futuras) para que el historial
+    completo (1-17 LMX, 1-18 NFL) y el calendario futuro estén siempre disponibles.
     """
+    from django.db.models import Count, Q
     _, _, tourn_lmx, tourn_nfl = get_or_create_structure()
     total_updated = 0
     details = {}
 
     if league_code in ('ALL', 'LMX'):
         lmx_updated = 0
-        for j in range(13, 18):
-            res = sync_espn_lmx(week_number=j, fetch_forms=(fetch_forms and j <= 15))
+        lmx_stats = {
+            w.week_number: (w.m_total, w.m_final)
+            for w in MatchWeek.objects.filter(tournament=tourn_lmx).annotate(
+                m_total=Count('matches'),
+                m_final=Count('matches', filter=Q(matches__status='FINAL'))
+            )
+        }
+        for j in range(1, 18):
+            m_total, m_final = lmx_stats.get(j, (0, 0))
+            # Si es una jornada pasada (<= 13) y ya tiene sus 9 partidos finalizados, no re-consultar a ESPN
+            if j <= 13 and m_total >= 9 and m_final >= 9:
+                continue
+            res = sync_espn_lmx(week_number=j, fetch_forms=(fetch_forms and j in (14, 15)))
             lmx_updated += res.get('matches_updated', 0)
         details['LMX'] = lmx_updated
         total_updated += lmx_updated
 
     if league_code in ('ALL', 'NFL'):
         nfl_updated = 0
-        for s in range(7, 19):
+        nfl_stats = {
+            w.week_number: (w.m_total, w.m_final)
+            for w in MatchWeek.objects.filter(tournament=tourn_nfl).annotate(
+                m_total=Count('matches'),
+                m_final=Count('matches', filter=Q(matches__status='FINAL'))
+            )
+        }
+        for s in range(1, 19):
+            m_total, m_final = nfl_stats.get(s, (0, 0))
+            # Si es una semana pasada (<= 6) y ya tiene sus partidos finalizados, no re-consultar a ESPN
+            if s <= 6 and m_total >= 12 and m_final >= m_total:
+                continue
             res = sync_espn_nfl(week_number=s)
             nfl_updated += res.get('matches_updated', 0)
         details['NFL'] = nfl_updated
