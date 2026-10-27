@@ -9,6 +9,7 @@ from .espn_sync import (
     get_or_create_structure,
     find_or_create_match,
     sync_upcoming_calendar,
+    refresh_all_lmx_forms,
     _refresh_week_metadata,
 )
 
@@ -284,18 +285,18 @@ def repair_and_sync_all(sync_remote=True):
             if created:
                 j13_preds_seeded += 1
 
-    # 8. Jornada 14 Liga MX (Upsert idempotente: conserva marcadores FINAL si ya se jugaron)
+    # 8. Jornada 14 Liga MX (Upsert idempotente con rachas reales actualizadas)
     w14 = lmx_weeks[14]
     j14_specs = [
-        {"home": "Necaxa", "away": "FC Juárez", "dt": "2026-10-23 19:00:00", "hf": "D-D-E-D-D", "af": "V-D-E-D-D"},
-        {"home": "Atlante", "away": "San Luis", "dt": "2026-10-23 21:00:00", "hf": "E-V-D-D-V", "af": "V-V-D-E-V"},
-        {"home": "León", "away": "Toluca", "dt": "2026-10-24 17:00:00", "hf": "E-V-E-D-V", "af": "D-E-D-E-E"},
-        {"home": "Rayados", "away": "Chivas", "dt": "2026-10-24 19:00:00", "hf": "V-D-E-V-V", "af": "E-D-E-E-V"},
-        {"home": "Pumas", "away": "Tigres", "dt": "2026-10-24 21:10:00", "hf": "E-D-E-V-D", "af": "D-V-V-E-D"},
-        {"home": "Atlas", "away": "Puebla", "dt": "2026-10-25 17:00:00", "hf": "E-V-E-V-D", "af": "E-D-E-E-D"},
-        {"home": "Querétaro", "away": "Cruz Azul", "dt": "2026-10-25 19:00:00", "hf": "E-V-V-D-D", "af": "D-E-E-V-V"},
-        {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00", "hf": "E-V-E-V-V", "af": "E-D-E-D-D"},
-        {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00", "hf": "E-D-E-E-E", "af": "V-V-V-V-V"},
+        {"home": "Necaxa", "away": "FC Juárez", "dt": "2026-10-23 19:00:00", "hf": "D-E-D-D-E", "af": "D-E-D-D-E"},
+        {"home": "Atlante", "away": "San Luis", "dt": "2026-10-23 21:00:00", "hf": "V-D-D-V-D", "af": "V-D-E-V-V"},
+        {"home": "León", "away": "Toluca", "dt": "2026-10-24 17:00:00", "hf": "V-E-D-V-E", "af": "E-D-E-E-E"},
+        {"home": "Rayados", "away": "Chivas", "dt": "2026-10-24 19:00:00", "hf": "D-E-V-V-D", "af": "D-E-E-V-V"},
+        {"home": "Pumas", "away": "Tigres", "dt": "2026-10-24 21:10:00", "hf": "D-E-V-D-E", "af": "V-V-E-D-E"},
+        {"home": "Atlas", "away": "Puebla", "dt": "2026-10-25 17:00:00", "hf": "V-E-V-D-V", "af": "D-E-E-D-D"},
+        {"home": "Querétaro", "away": "Cruz Azul", "dt": "2026-10-25 19:00:00", "hf": "V-V-D-D-D", "af": "E-E-V-V-V"},
+        {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00", "hf": "V-E-V-V-D", "af": "D-E-D-D-V"},
+        {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00", "hf": "D-E-E-E-V", "af": "V-V-V-V-D"},
     ]
     for sp in j14_specs:
         _upsert_match_spec(
@@ -330,9 +331,15 @@ def repair_and_sync_all(sync_remote=True):
     sync_summary = {}
     if sync_remote:
         try:
-            sync_summary = sync_upcoming_calendar(league_code='ALL', fetch_forms=False)
+            sync_summary = sync_upcoming_calendar(league_code='ALL', fetch_forms=True)
         except Exception as e:
             sync_summary = {"error": str(e)}
+    else:
+        try:
+            forms_updated = refresh_all_lmx_forms(force=False)
+            sync_summary = {"forms_updated": forms_updated}
+        except Exception:
+            pass
 
     return {
         "status": "ok",

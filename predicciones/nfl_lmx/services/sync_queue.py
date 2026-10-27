@@ -137,7 +137,7 @@ def _execute_job(job):
             if league == 'NFL':
                 return sync_espn_nfl(week_number=week)
             else:
-                return sync_espn_lmx(week_number=week, fetch_forms=(job.job_type == 'SYNC_LEAGUE_WEEK'))
+                return sync_espn_lmx(week_number=week, fetch_forms=True)
         else:
             # Buscar todas las semanas abiertas con partidos en curso o vencidos
             now = timezone.now()
@@ -150,12 +150,12 @@ def _execute_job(job):
             for w in due_weeks:
                 l_code = w.tournament.league.code if (w.tournament and w.tournament.league) else 'LMX'
                 if league in ('ALL', l_code):
-                    res = sync_espn_nfl(week_number=w.week_number) if l_code == 'NFL' else sync_espn_lmx(week_number=w.week_number, fetch_forms=False)
+                    res = sync_espn_nfl(week_number=w.week_number) if l_code == 'NFL' else sync_espn_lmx(week_number=w.week_number, fetch_forms=True)
                     total += res.get('matches_updated', 0)
             return {'status': 'ok', 'matches_updated': total}
 
     elif job.job_type == 'SYNC_UPCOMING_CALENDAR':
-        return sync_upcoming_calendar(league_code=league, fetch_forms=False)
+        return sync_upcoming_calendar(league_code=league, fetch_forms=True)
 
     return {'status': 'noop', 'matches_updated': 0}
 
