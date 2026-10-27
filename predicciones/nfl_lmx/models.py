@@ -26,7 +26,13 @@ class Team(models.Model):
     short_name = models.CharField(max_length=30, blank=True)
     league = models.ForeignKey(League, on_delete=models.CASCADE, related_name='teams')
     logo_url = models.CharField(max_length=300, blank=True)
-    espn_id = models.CharField(max_length=50, blank=True, null=True)
+    espn_id = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['league', 'espn_id']),
+            models.Index(fields=['league', 'short_name']),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.league.code})"
@@ -86,6 +92,11 @@ class Match(models.Model):
 
     class Meta:
         ordering = ['date_time']
+        indexes = [
+            models.Index(fields=['week', 'date_time']),
+            models.Index(fields=['status', 'date_time']),
+            models.Index(fields=['espn_id']),
+        ]
 
     @property
     def is_locked(self):
@@ -161,6 +172,11 @@ class Prediction(models.Model):
 
     class Meta:
         unique_together = ('pool', 'user', 'match')
+        indexes = [
+            models.Index(fields=['pool', 'user']),
+            models.Index(fields=['pool', 'match']),
+            models.Index(fields=['pool', 'is_correct']),
+        ]
 
     def __str__(self):
         return f"{self.user.username} -> {self.match}: {self.pick}"
@@ -174,3 +190,45 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return self.display_name or self.user.username
+
+
+class SyncJob(models.Model):
+    """
+    Cola persistente de trabajos de sincronización en segundo plano (PostgreSQL / SQLite).
+    Desacopla por completo las lecturas de usuario de las llamadas externas a ESPN.
+    """
+    JOB_TYPE_CHOICES = [
+        ('SYNC_LIVE_SCORES', 'Sincronizar Marcadores en Vivo'),
+        ('SYNC_LEAGUE_WEEK', 'Sincronizar Jornada Específica'),
+        ('SYNC_UPCOMING_CALENDAR', 'Pre-cargar y Actualizar Calendario Futuro'),
+    ]
+    STATUS_CHOICES = [
+        ('PENDING', 'Pendiente'),
+        ('PROCESSING', 'Procesando'),
+        ('COMPLETED', 'Completado'),
+        ('FAILED', 'Fallido'),
+    ]
+
+    job_type = models.CharField(max_length=40, choices=JOB_TYPE_CHOICES)
+    league_code = models.CharField(max_length=10, default='ALL')
+    week_number = models.PositiveIntegerField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING', db_index=True)
+    priority = models.IntegerField(default=5)
+    dedup_key = models.CharField(max_length=120, db_index=True)
+    scheduled_for = models.DateTimeField(default=timezone.now, db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    matches_updated = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-priority', 'scheduled_for', 'id']
+        indexes = [
+            models.Index(fields=['status', '-priority', 'scheduled_for']),
+            models.Index(fields=['dedup_key', 'status', 'completed_at']),
+        ]
+
+    def __str__(self):
+        return f"[{self.status}] {self.job_type} ({self.league_code} W{self.week_number or 'ALL'})"

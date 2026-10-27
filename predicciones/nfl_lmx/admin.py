@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile
+from .models import Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile, SyncJob
 
 @admin.register(Sport)
 class SportAdmin(admin.ModelAdmin):
@@ -57,3 +57,9 @@ class PredictionAdmin(admin.ModelAdmin):
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
     list_display = ('user', 'display_name', 'phone')
+
+@admin.register(SyncJob)
+class SyncJobAdmin(admin.ModelAdmin):
+    list_display = ('id', 'job_type', 'league_code', 'week_number', 'status', 'priority', 'matches_updated', 'scheduled_for', 'completed_at')
+    list_filter = ('status', 'job_type', 'league_code')
+    ordering = ('-id',)

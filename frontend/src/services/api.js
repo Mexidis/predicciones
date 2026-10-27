@@ -41,6 +41,32 @@ export function clearClientCache(prefix = '') {
 }
 
 export const api = {
+  // Bootstrap unificado (1 sola llamada para cargar Liga + Pool + Semanas + Partidos + Standings + Boleta)
+  async getBootstrap({ league = 'NFL', poolId = '', weekId = '', userId = '', forceRefresh = false } = {}) {
+    const cacheKey = `bootstrap_${league}_${poolId || 'auto'}_${weekId || 'active'}_${userId || 'anon'}`;
+    if (!forceRefresh) {
+      const cached = getCached(cacheKey, 25000);
+      if (cached) return cached;
+    }
+    try {
+      const params = new URLSearchParams();
+      if (league) params.set('league', league);
+      if (poolId) params.set('pool_id', poolId);
+      if (weekId) params.set('week_id', weekId);
+      if (userId) params.set('user_id', userId);
+
+      const res = await fetch(`${API_BASE}/bootstrap/?${params.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setCached(cacheKey, data);
+        return data;
+      }
+    } catch (e) {
+      console.warn("Error en bootstrap API", e);
+    }
+    return null;
+  },
+
   // Autenticación y Usuarios
   async getUsers() {
     const cached = getCached('users', 300000);
@@ -67,6 +93,7 @@ export const api = {
     const data = await res.json();
     if (data && data.user) {
       clearClientCache('matches_');
+      clearClientCache('bootstrap_');
     }
     return data;
   },
@@ -157,6 +184,7 @@ export const api = {
   async savePrediction(userId, poolId, matchId, pick) {
     clearClientCache('matches_');
     clearClientCache('standings_');
+    clearClientCache('bootstrap_');
     const res = await fetch(`${API_BASE}/predictions/save/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -200,13 +228,36 @@ export const api = {
     return await res.json();
   },
 
-  // Sincronización ESPN (Manual / Admin)
-  async syncEspn(leagueCode, weekNumber) {
+  // Sincronización ESPN y Cola de Mensajes
+  async syncEspn(leagueCode, weekNumber, options = {}) {
     clearClientCache();
     const res = await fetch(`${API_BASE}/sync/espn/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ league: leagueCode, week: weekNumber })
+      body: JSON.stringify({
+        league: leagueCode,
+        week: weekNumber,
+        sync_upcoming: Boolean(options.syncUpcoming),
+        async: Boolean(options.asyncMode),
+      })
+    });
+    return await res.json();
+  },
+
+  async getSyncQueueStatus() {
+    try {
+      const res = await fetch(`${API_BASE}/sync/queue/`);
+      if (res.ok) return await res.json();
+    } catch (e) {}
+    return { queue: { pending_jobs: 0, last_sync: null }, recent_jobs: [] };
+  },
+
+  async triggerSyncQueue(action = 'tick', league = 'ALL', week = null) {
+    clearClientCache();
+    const res = await fetch(`${API_BASE}/sync/queue/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, league, week })
     });
     return await res.json();
   },

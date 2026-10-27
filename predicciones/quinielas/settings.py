@@ -61,17 +61,19 @@ WSGI_APPLICATION = 'quinielas.wsgi.application'
 # Base de datos: usa DATABASE_URL (Supabase/Neon/Render PostgreSQL) si existe, sino SQLite local
 database_url = os.environ.get('DATABASE_URL')
 if database_url:
-    # Si la URL apunta al Transaction Pooler de Supabase (puerto 6543 o pooler.supabase.com),
-    # conn_max_age debe ser 0 para evitar errores de prepared statements en PgBouncer.
-    is_pooler = 'pooler.supabase.com' in database_url or ':6543' in database_url
+    # psycopg2 usa interpolación del lado del cliente (sin prepared statements de servidor),
+    # por lo que conn_max_age=60 con conn_health_checks=True reutiliza la conexión TLS entre Render y Supabase
+    # evitando ~200ms de handshake SSL en cada request HTTP.
     DATABASES = {
         'default': dj_database_url.config(
             default=database_url,
-            conn_max_age=0 if is_pooler else 600,
+            conn_max_age=60,
             conn_health_checks=True,
             ssl_require=True if 'supabase' in database_url else False,
         )
     }
+    DATABASES['default'].setdefault('OPTIONS', {})
+    DATABASES['default']['OPTIONS'].setdefault('connect_timeout', 10)
 else:
     DATABASES = {
         'default': {

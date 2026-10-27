@@ -1,3 +1,4 @@
+import time
 import requests
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
@@ -9,7 +10,9 @@ from ..models import Sport, League, Team, Tournament, MatchWeek, Match, Predicti
 ESPN_NFL_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_LMX_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/mex.1/scoreboard"
 
+# Caché en memoria con TTL (2 horas) para rachas de equipos Liga MX
 _lmx_team_form_cache = {}
+_LMX_FORM_TTL_SECONDS = 7200
 
 # Mapeo oficial de fechas por Jornada para Liga MX Apertura 2026
 LMX_JORNADAS_DATES = {
@@ -20,21 +23,34 @@ LMX_JORNADAS_DATES = {
     5: ['20260821', '20260822', '20260823'],
     6: ['20260828', '20260829', '20260830'],
     7: ['20260904', '20260905', '20260906'],
-    8: ['20260912', '20260913', '20260914', '20260915'],
+    8: ['20260910', '20260911', '20260912', '20260913', '20260914', '20260915'],
     9: ['20260918', '20260919', '20260920'],
     10: ['20260925', '20260926', '20260927'],
     11: ['20261009', '20261010', '20261011'],
     12: ['20261016', '20261017', '20261018'],
     13: ['20261020', '20261021'],
     14: ['20261023', '20261024', '20261025'],
-    15: ['20261028', '20261030', '20261031', '20261101'],
+    15: ['20261030', '20261031', '20261101'],
     16: ['20261106', '20261107', '20261108'],
     17: ['20261120', '20261121', '20261122'],
 }
 
+def _get_cached_lmx_form(espn_id):
+    str_id = str(espn_id or '').strip()
+    if not str_id:
+        return None
+    entry = _lmx_team_form_cache.get(str_id)
+    if entry and (time.time() - entry[0] < _LMX_FORM_TTL_SECONDS):
+        return entry[1]
+    return None
+
 def prefetch_lmx_forms(team_ids):
     """Descarga de forma concurrente la racha oficial de los equipos para evitar timeouts."""
-    needed = [str(t).strip() for t in team_ids if str(t).strip() and str(t).strip() not in _lmx_team_form_cache]
+    needed = [
+        str(t).strip()
+        for t in team_ids
+        if str(t).strip() and _get_cached_lmx_form(t) is None
+    ]
     if needed:
         with ThreadPoolExecutor(max_workers=6) as executor:
             list(executor.map(fetch_lmx_team_form, needed))
@@ -105,12 +121,13 @@ def fetch_lmx_team_form(espn_id):
     if not espn_id:
         return ""
     str_id = str(espn_id).strip()
-    if str_id in _lmx_team_form_cache:
-        return _lmx_team_form_cache[str_id]
+    cached = _get_cached_lmx_form(str_id)
+    if cached is not None:
+        return cached
 
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/mex.1/teams/{str_id}/schedule"
-        resp = requests.get(url, timeout=7)
+        resp = requests.get(url, timeout=6)
         if resp.status_code != 200:
             return ""
         events = resp.json().get('events', [])
@@ -143,7 +160,7 @@ def fetch_lmx_team_form(espn_id):
 
         form_str = '-'.join(form_chars)
         if form_str:
-            _lmx_team_form_cache[str_id] = form_str
+            _lmx_team_form_cache[str_id] = (time.time(), form_str)
         return form_str
     except Exception:
         return ""
@@ -306,9 +323,36 @@ def find_or_create_match(week_obj, home_team, away_team, espn_id, kickoff):
     match.date_time = kickoff
     return match, True
 
+def _refresh_week_metadata(week_obj, min_expected_matches=8):
+    """
+    Actualiza start_date y end_date de una jornada en función de sus partidos reales.
+    Preserva is_closed intacto para no alterar el cálculo acumulado (manual_points + active_hits).
+    """
+    if not week_obj:
+        return
+    matches = list(week_obj.matches.all())
+    if not matches:
+        return
+
+    dates = [timezone.localtime(m.date_time).date() for m in matches if m.date_time]
+    start_d = min(dates) if dates else week_obj.start_date
+    end_d = max(dates) if dates else week_obj.end_date
+
+    changed = False
+    if start_d and week_obj.start_date != start_d:
+        week_obj.start_date = start_d
+        changed = True
+    if end_d and week_obj.end_date != end_d:
+        week_obj.end_date = end_d
+        changed = True
+    if changed:
+        week_obj.save(update_fields=['start_date', 'end_date'])
+
+
 def sync_espn_nfl(week_number=None, year=None):
     """
-    Sincroniza partidos de NFL desde ESPN Scoreboard usando el año y jornada actuales.
+    Sincroniza partidos de NFL desde ESPN Scoreboard usando el año y jornada solicitados.
+    Garantiza idempotencia por espn_id y protege marcadores ya finalizados.
     """
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
     season_year = year or tourn_nfl.year or timezone.now().year
@@ -322,17 +366,20 @@ def sync_espn_nfl(week_number=None, year=None):
         'dates': str(season_year)
     }
     if week_number:
-        params['week'] = week_number
+        params['week'] = int(week_number)
 
     try:
-        resp = requests.get(ESPN_NFL_URL, params=params, timeout=12)
+        resp = requests.get(ESPN_NFL_URL, params=params, timeout=10)
         if resp.status_code != 200:
             return {"error": f"ESPN returned status {resp.status_code}"}
         data = resp.json()
     except Exception as e:
         return {"error": str(e)}
 
-    espn_week_num = data.get('week', {}).get('number', week_number or 1)
+    espn_week_num = data.get('week', {}).get('number', int(week_number) if week_number else 1)
+    if week_number and int(espn_week_num) != int(week_number):
+        return {"error": f"ESPN returned week {espn_week_num} instead of requested week {week_number}", "matches_updated": 0}
+
     week_obj, _ = MatchWeek.objects.get_or_create(
         tournament=tourn_nfl,
         week_number=espn_week_num,
@@ -380,7 +427,10 @@ def sync_espn_nfl(week_number=None, year=None):
                 h_score, a_score = None, None
 
             if status == 'FINAL' and h_score is not None and a_score is not None:
-                match.update_result(h_score, a_score, status='FINAL')
+                if match.status != 'FINAL' or match.home_score != h_score or match.away_score != a_score or not match.winner:
+                    match.update_result(h_score, a_score, status='FINAL')
+                else:
+                    match.save(update_fields=['date_time', 'espn_id', 'home_form', 'away_form'])
             else:
                 match.status = status
                 match.home_score = h_score
@@ -388,23 +438,35 @@ def sync_espn_nfl(week_number=None, year=None):
                 match.save()
         elif status in ['POSTPONED', 'CANCELED']:
             match.status = status
-            match.save(update_fields=['status', 'date_time'])
+            match.save(update_fields=['status', 'date_time', 'espn_id'])
         else:
-            match.status = status
-            match.home_score = None
-            match.away_score = None
-            match.winner = None
+            # Si ya fue finalizado previamente (ej. captura manual), no borrar el marcador
+            if match.status != 'FINAL':
+                match.status = status
+                match.home_score = None
+                match.away_score = None
+                match.winner = None
             match.save()
 
         updated_matches += 1
 
+    _refresh_week_metadata(week_obj, min_expected_matches=12)
     return {"status": "ok", "week": espn_week_num, "matches_updated": updated_matches}
 
-def sync_espn_lmx(week_number=None, date_str=None):
+def _fetch_lmx_events_for_date(date_param):
+    try:
+        resp = requests.get(ESPN_LMX_URL, params={'dates': date_param}, timeout=7)
+        if resp.status_code == 200:
+            return resp.json().get('events', [])
+    except Exception:
+        pass
+    return []
+
+def sync_espn_lmx(week_number=None, date_str=None, fetch_forms=True):
     """
-    Sincroniza partidos de Liga MX desde ESPN.
+    Sincroniza partidos de Liga MX desde ESPN de forma concurrente y segura.
     Soporta cualquier jornada (1 a 17) usando el calendario oficial de fechas.
-    Actualiza la racha de últimos 5 partidos de liga oficial (idéntico a Google).
+    Jamás contamina una jornada con partidos de otra fecha.
     """
     league_lmx, league_nfl, tourn_lmx, tourn_nfl = get_or_create_structure()
 
@@ -415,15 +477,17 @@ def sync_espn_lmx(week_number=None, date_str=None):
         except (ValueError, TypeError):
             week_num_int = None
 
+    if not week_num_int and not date_str:
+        open_week = MatchWeek.objects.filter(tournament=tourn_lmx, is_closed=False).order_by('week_number').first()
+        week_num_int = open_week.week_number if open_week else 14
+
     week_obj = None
     if week_num_int:
-        week_obj = MatchWeek.objects.filter(tournament=tourn_lmx, week_number=week_num_int).first()
-        if not week_obj:
-            week_obj, _ = MatchWeek.objects.get_or_create(
-                tournament=tourn_lmx,
-                week_number=week_num_int,
-                defaults={"name": f"Jornada {week_num_int}"}
-            )
+        week_obj, _ = MatchWeek.objects.get_or_create(
+            tournament=tourn_lmx,
+            week_number=week_num_int,
+            defaults={"name": f"Jornada {week_num_int}"}
+        )
 
     dates_to_query = []
     if date_str:
@@ -431,42 +495,33 @@ def sync_espn_lmx(week_number=None, date_str=None):
     elif week_num_int and week_num_int in LMX_JORNADAS_DATES:
         dates_to_query = LMX_JORNADAS_DATES[week_num_int]
     elif week_obj and week_obj.matches.exists():
-        dates_to_query = sorted({m.date_time.strftime('%Y%m%d') for m in week_obj.matches.all()})
+        dates_to_query = sorted({timezone.localtime(m.date_time).strftime('%Y%m%d') for m in week_obj.matches.all()})
     else:
-        today = timezone.now().date()
-        dates_to_query = [(today + timedelta(days=d)).strftime('%Y%m%d') for d in range(-1, 4)]
+        return {"status": "ok", "message": "Sin fechas mapeadas para la jornada solicitada", "matches_updated": 0}
 
     all_events = []
-    for d in dates_to_query:
-        try:
-            resp = requests.get(ESPN_LMX_URL, params={'dates': d}, timeout=8)
-            if resp.status_code == 200:
-                events = resp.json().get('events', [])
-                all_events.extend(events)
-        except Exception:
-            continue
+    seen_event_ids = set()
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(dates_to_query)))) as executor:
+        for events_batch in executor.map(_fetch_lmx_events_for_date, dates_to_query):
+            for ev in events_batch:
+                ev_id = str(ev.get('id', '')).strip()
+                if ev_id and ev_id not in seen_event_ids:
+                    seen_event_ids.add(ev_id)
+                    all_events.append(ev)
 
     if not all_events:
         return {"status": "ok", "message": "No se encontraron partidos en las fechas consultadas", "matches_updated": 0}
 
-    if not week_obj:
-        week_obj = MatchWeek.objects.filter(tournament=tourn_lmx, is_closed=False).order_by('-week_number').first()
-        if not week_obj:
-            week_obj, _ = MatchWeek.objects.get_or_create(
-                tournament=tourn_lmx,
-                week_number=14,
-                defaults={"name": "Jornada 14"}
-            )
-
-    # Pre-descargar concurrentemente las rachas de los equipos involucrados
-    team_ids_to_prefetch = set()
-    for ev in all_events:
-        for c in ev.get('competitions', [{}])[0].get('competitors', []):
-            tid = c.get('team', {}).get('id')
-            if tid:
-                team_ids_to_prefetch.add(str(tid))
-    if team_ids_to_prefetch:
-        prefetch_lmx_forms(team_ids_to_prefetch)
+    # Pre-descargar concurrentemente las rachas de los equipos involucrados si se solicita
+    if fetch_forms:
+        team_ids_to_prefetch = set()
+        for ev in all_events:
+            for c in ev.get('competitions', [{}])[0].get('competitors', []):
+                tid = c.get('team', {}).get('id')
+                if tid:
+                    team_ids_to_prefetch.add(str(tid))
+        if team_ids_to_prefetch:
+            prefetch_lmx_forms(team_ids_to_prefetch)
 
     updated_matches = 0
     for event in all_events:
@@ -487,9 +542,12 @@ def sync_espn_lmx(week_number=None, date_str=None):
         home_team = get_or_create_lmx_team(league_lmx, home_comp.get('team', {}))
         away_team = get_or_create_lmx_team(league_lmx, away_comp.get('team', {}))
 
-        # Obtener racha real de últimos 5 partidos del torneo oficial (igual a Google)
-        home_form = fetch_lmx_team_form(home_team.espn_id) or format_form_string(home_comp.get('form', ''))
-        away_form = fetch_lmx_team_form(away_team.espn_id) or format_form_string(away_comp.get('form', ''))
+        if fetch_forms:
+            home_form = fetch_lmx_team_form(home_team.espn_id) or format_form_string(home_comp.get('form', ''))
+            away_form = fetch_lmx_team_form(away_team.espn_id) or format_form_string(away_comp.get('form', ''))
+        else:
+            home_form = _get_cached_lmx_form(home_team.espn_id) or format_form_string(home_comp.get('form', ''))
+            away_form = _get_cached_lmx_form(away_team.espn_id) or format_form_string(away_comp.get('form', ''))
 
         match, _ = find_or_create_match(week_obj, home_team, away_team, espn_id, kickoff)
 
@@ -508,7 +566,10 @@ def sync_espn_lmx(week_number=None, date_str=None):
                 h_score, a_score = None, None
 
             if status == 'FINAL' and h_score is not None and a_score is not None:
-                match.update_result(h_score, a_score, status='FINAL')
+                if match.status != 'FINAL' or match.home_score != h_score or match.away_score != a_score or not match.winner:
+                    match.update_result(h_score, a_score, status='FINAL')
+                else:
+                    match.save(update_fields=['date_time', 'espn_id', 'home_form', 'away_form'])
             else:
                 match.status = status
                 match.home_score = h_score
@@ -516,29 +577,51 @@ def sync_espn_lmx(week_number=None, date_str=None):
                 match.save()
         elif status in ['POSTPONED', 'CANCELED']:
             match.status = status
-            match.save(update_fields=['status', 'date_time'])
+            match.save(update_fields=['status', 'date_time', 'espn_id'])
         else:
-            match.status = status
-            match.home_score = None
-            match.away_score = None
-            match.winner = None
+            if match.status != 'FINAL':
+                match.status = status
+                match.home_score = None
+                match.away_score = None
+                match.winner = None
             match.save()
 
         updated_matches += 1
 
-    # Asegurar que todos los partidos de la jornada tengan su racha oficial si aún no la tienen
-    for m in week_obj.matches.all():
-        if not m.home_form or not m.away_form:
-            hf = fetch_lmx_team_form(m.home_team.espn_id) if not m.home_form else None
-            af = fetch_lmx_team_form(m.away_team.espn_id) if not m.away_form else None
-            changed = False
-            if hf and m.home_form != hf:
-                m.home_form = hf
-                changed = True
-            if af and m.away_form != af:
-                m.away_form = af
-                changed = True
-            if changed:
-                m.save()
+    if week_num_int and week_num_int in LMX_JORNADAS_DATES:
+        valid_dates = set(LMX_JORNADAS_DATES[week_num_int])
+        for m in list(week_obj.matches.all()):
+            m_local_date = timezone.localtime(m.date_time).strftime('%Y%m%d')
+            if m_local_date not in valid_dates and not m.predictions.exists():
+                m.delete()
 
+    _refresh_week_metadata(week_obj, min_expected_matches=8)
     return {"status": "ok", "week": week_obj.week_number, "matches_updated": updated_matches}
+
+
+def sync_upcoming_calendar(league_code='ALL', fetch_forms=False):
+    """
+    Sincroniza de antemano todas las jornadas activas y futuras del torneo
+    para que los partidos de las siguientes jornadas estén siempre registrados y actualizados.
+    """
+    _, _, tourn_lmx, tourn_nfl = get_or_create_structure()
+    total_updated = 0
+    details = {}
+
+    if league_code in ('ALL', 'LMX'):
+        lmx_updated = 0
+        for j in range(13, 18):
+            res = sync_espn_lmx(week_number=j, fetch_forms=(fetch_forms and j <= 15))
+            lmx_updated += res.get('matches_updated', 0)
+        details['LMX'] = lmx_updated
+        total_updated += lmx_updated
+
+    if league_code in ('ALL', 'NFL'):
+        nfl_updated = 0
+        for s in range(7, 19):
+            res = sync_espn_nfl(week_number=s)
+            nfl_updated += res.get('matches_updated', 0)
+        details['NFL'] = nfl_updated
+        total_updated += nfl_updated
+
+    return {"status": "ok", "matches_updated": total_updated, "details": details}

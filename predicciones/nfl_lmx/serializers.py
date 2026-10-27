@@ -39,10 +39,43 @@ class TeamSerializer(serializers.ModelSerializer):
 
 class MatchWeekSerializer(serializers.ModelSerializer):
     matches_count = serializers.IntegerField(default=0, read_only=True)
+    final_matches_count = serializers.IntegerField(default=0, read_only=True)
+    live_matches_count = serializers.IntegerField(default=0, read_only=True)
+    scheduled_matches_count = serializers.IntegerField(default=0, read_only=True)
+    league_code = serializers.SerializerMethodField()
+    week_state = serializers.SerializerMethodField()
 
     class Meta:
         model = MatchWeek
-        fields = ['id', 'week_number', 'name', 'start_date', 'end_date', 'is_closed', 'matches_count']
+        fields = [
+            'id', 'tournament', 'league_code', 'week_number', 'name',
+            'start_date', 'end_date', 'is_closed', 'matches_count',
+            'final_matches_count', 'live_matches_count', 'scheduled_matches_count',
+            'week_state'
+        ]
+
+    def get_league_code(self, obj):
+        try:
+            if obj.tournament and obj.tournament.league:
+                return obj.tournament.league.code
+        except Exception:
+            pass
+        return None
+
+    def get_week_state(self, obj):
+        total = getattr(obj, 'matches_count', None)
+        if total is None:
+            total = obj.matches.count()
+        if total == 0:
+            return 'EMPTY'
+        final_cnt = getattr(obj, 'final_matches_count', 0) or 0
+        live_cnt = getattr(obj, 'live_matches_count', 0) or 0
+        sched_cnt = getattr(obj, 'scheduled_matches_count', 0) or 0
+        if final_cnt >= total:
+            return 'COMPLETED'
+        if live_cnt > 0 or (final_cnt > 0 and sched_cnt > 0):
+            return 'LIVE'
+        return 'UPCOMING'
 
 class MatchSerializer(serializers.ModelSerializer):
     home_team = TeamSerializer(read_only=True)
@@ -73,6 +106,9 @@ class PoolSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'invite_code', 'tournament', 'creator', 'created_at', 'members_count']
 
     def get_members_count(self, obj):
+        annotated = getattr(obj, 'members_count', None)
+        if annotated is not None:
+            return annotated
         return obj.memberships.count()
 
 class PredictionSerializer(serializers.ModelSerializer):

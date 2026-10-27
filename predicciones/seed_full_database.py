@@ -441,5 +441,8 @@ def seed():
 
 if __name__ == '__main__':
     from nfl_lmx.services.db_repair import repair_and_sync_all
-    res = repair_and_sync_all()
+    from nfl_lmx.services.sync_queue import enqueue_sync_job
+    # En build/deploy ejecuta el aseguramiento idempotente rápido y encola la sincronización de calendario en 2do plano
+    res = repair_and_sync_all(sync_remote=False)
+    enqueue_sync_job('SYNC_UPCOMING_CALENDAR', league_code='ALL', cooldown_seconds=0, priority=10, force=True)
     print("Seed & Repair resultado:", res)

@@ -7,14 +7,20 @@ from django.utils import timezone
 from django.db.models import Count, Q
 from django.core.cache import cache
 from .models import (
-    Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile
+    Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile, SyncJob
 )
 from .serializers import (
     TournamentSerializer, MatchWeekSerializer, MatchSerializer,
     PoolSerializer, PredictionSerializer, UserSerializer
 )
-from .services.espn_sync import sync_espn_nfl, sync_espn_lmx
+from .services.espn_sync import sync_espn_nfl, sync_espn_lmx, sync_upcoming_calendar
 from .services.db_repair import repair_and_sync_all
+from .services.sync_queue import (
+    enqueue_sync_job,
+    trigger_nonblocking_week_sync,
+    drain_sync_queue,
+    get_queue_status_summary,
+)
 
 # --- AUTENTICACIÓN Y REGISTRO ---
 
@@ -135,11 +141,11 @@ def api_get_users(request):
 def api_list_pools(request):
     user_id = request.query_params.get('user_id')
     if user_id:
-        pools = Pool.objects.filter(memberships__user_id=user_id).select_related('tournament__league')
+        pools = Pool.objects.filter(memberships__user_id=user_id).select_related('tournament__league').annotate(members_count=Count('memberships'))
     else:
-        pools = Pool.objects.all().select_related('tournament__league')
+        pools = Pool.objects.all().select_related('tournament__league').annotate(members_count=Count('memberships'))
     response = Response(PoolSerializer(pools, many=True).data)
-    response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+    response['Cache-Control'] = 'private, no-store' if user_id else 'public, max-age=60, stale-while-revalidate=300'
     return response
 
 @api_view(['POST'])
@@ -172,52 +178,256 @@ def api_list_tournaments(request):
     tournaments = Tournament.objects.filter(is_active=True).select_related('league')
     return Response(TournamentSerializer(tournaments, many=True).data)
 
+def _annotated_weeks_queryset(tournament=None):
+    qs = MatchWeek.objects.select_related('tournament__league')
+    if tournament is not None:
+        qs = qs.filter(tournament=tournament)
+    return qs.annotate(
+        matches_count=Count('matches'),
+        final_matches_count=Count('matches', filter=Q(matches__status='FINAL')),
+        live_matches_count=Count('matches', filter=Q(matches__status='IN_PROGRESS')),
+        scheduled_matches_count=Count('matches', filter=Q(matches__status='SCHEDULED')),
+    ).order_by('week_number')
+
+
+def _resolve_valid_week_for_tournament(tournament, requested_week_id=None, weeks_list=None):
+    """
+    Garantiza que la jornada seleccionada pertenezca estrictamente al torneo indicado.
+    Si `requested_week_id` pertenece a otra liga/torneo o no se envía, elige inteligentemente
+    la jornada activa actual:
+    1. Primero una jornada en juego ('LIVE', con partidos jugados y otros por jugar o en progreso).
+    2. Si una jornada acaba de terminar en las últimas 36 horas, mostrarla para ver resultados.
+    3. De lo contrario, la primera jornada abierta con partidos próximos ('UPCOMING').
+    """
+    if weeks_list is None:
+        weeks_list = list(_annotated_weeks_queryset(tournament))
+    if not weeks_list:
+        return None
+
+    if requested_week_id:
+        try:
+            req_id = int(requested_week_id)
+            matched = next((w for w in weeks_list if w.id == req_id), None)
+            if matched:
+                return matched
+        except (ValueError, TypeError):
+            pass
+
+    today = timezone.localdate()
+
+    # 1. Jornada parcialmente en curso (ej. NFL Semana 7 con TNF/Domingo jugados y MNF pendiente)
+    live_weeks = [
+        w for w in weeks_list
+        if not w.is_closed
+        and getattr(w, 'matches_count', 0) > 0
+        and (
+            getattr(w, 'live_matches_count', 0) > 0
+            or (getattr(w, 'final_matches_count', 0) > 0 and getattr(w, 'scheduled_matches_count', 0) > 0)
+        )
+    ]
+    if live_weeks:
+        return live_weeks[0]
+
+    # 2. Jornada recién finalizada ayer u hoy (ej. Lunes revisando cierre de Liga MX del domingo)
+    recently_finished = [
+        w for w in weeks_list
+        if not w.is_closed
+        and getattr(w, 'matches_count', 0) > 0
+        and getattr(w, 'final_matches_count', 0) == getattr(w, 'matches_count', 0)
+        and w.end_date is not None
+        and (today - w.end_date).days <= 1
+    ]
+    if recently_finished:
+        return recently_finished[-1]
+
+    # 3. Primera jornada próxima abierta con partidos pendientes
+    upcoming_open = [
+        w for w in weeks_list
+        if not w.is_closed
+        and getattr(w, 'matches_count', 0) > 0
+        and getattr(w, 'scheduled_matches_count', 0) > 0
+    ]
+    if upcoming_open:
+        return upcoming_open[0]
+
+    # 4. Cualquier jornada abierta con partidos
+    open_with_matches = [w for w in weeks_list if not w.is_closed and getattr(w, 'matches_count', 0) > 0]
+    if open_with_matches:
+        return open_with_matches[0]
+
+    any_with_matches = [w for w in weeks_list if getattr(w, 'matches_count', 0) > 0]
+    if any_with_matches:
+        return any_with_matches[-1]
+
+    open_any = [w for w in weeks_list if not w.is_closed]
+    return open_any[0] if open_any else weeks_list[-1]
+
+
+def _build_locked_picks_matrix(pool, week_id, week_matches=None, week_preds=None):
+    if not week_id:
+        return []
+    if week_matches is None:
+        week_matches = list(
+            Match.objects.filter(week_id=week_id)
+            .select_related('home_team', 'away_team')
+            .order_by('date_time')
+        )
+
+    if week_preds is None:
+        week_preds = list(
+            Prediction.objects.filter(
+                pool=pool,
+                match__week_id=week_id
+            ).values('match_id', 'user_id', 'pick', 'is_correct')
+        )
+
+    preds_by_match = {}
+    for p in week_preds:
+        m_id = p['match_id']
+        if m_id not in preds_by_match:
+            preds_by_match[m_id] = {}
+        preds_by_match[m_id][p['user_id']] = {
+            'pick': p['pick'],
+            'is_correct': p['is_correct']
+        }
+
+    locked_picks_matrix = []
+    for m in week_matches:
+        locked_picks_matrix.append({
+            'match_id': m.id,
+            'home_team': m.home_team.short_name or m.home_team.name,
+            'away_team': m.away_team.short_name or m.away_team.name,
+            'winner': m.winner,
+            'is_locked': m.is_locked,
+            'status': m.status,
+            'picks': preds_by_match.get(m.id, {}) if m.is_locked else {}
+        })
+    return locked_picks_matrix
+
+
+@api_view(['GET'])
+def api_bootstrap(request):
+    """
+    Endpoint unificado de alta velocidad: entrega en 1 sola llamada atómica
+    pools, semanas del torneo activo, partidos de la jornada seleccionada, picks del usuario,
+    tabla de posiciones y boleta grupal, validando que no exista cruce de datos entre ligas.
+    Optimizado para topología distribuida (Vercel -> Render -> Supabase) con mínimo RTT.
+    """
+    league_code = (request.query_params.get('league') or 'NFL').strip().upper()
+    pool_id = request.query_params.get('pool_id')
+    week_id = request.query_params.get('week_id')
+    user_id = request.query_params.get('user_id')
+
+    pools_qs = Pool.objects.all().select_related('tournament__league').annotate(members_count=Count('memberships'))
+    pools_list = list(pools_qs)
+    pools_data = PoolSerializer(pools_list, many=True).data
+
+    selected_pool = None
+    if pool_id:
+        try:
+            p_id = int(pool_id)
+            selected_pool = next((p for p in pools_list if p.id == p_id), None)
+        except (ValueError, TypeError):
+            selected_pool = None
+
+    if selected_pool and league_code and selected_pool.tournament and selected_pool.tournament.league:
+        if selected_pool.tournament.league.code != league_code:
+            selected_pool = None
+
+    if not selected_pool:
+        selected_pool = next(
+            (p for p in pools_list if p.tournament and p.tournament.league and p.tournament.league.code == league_code),
+            pools_list[0] if pools_list else None
+        )
+
+    if not selected_pool:
+        return Response({
+            'pools': [],
+            'selected_pool': None,
+            'weeks': [],
+            'selected_week': None,
+            'matches': [],
+            'standings': [],
+            'matches_breakdown': [],
+            'sync_queue': get_queue_status_summary(),
+        })
+
+    weeks_list = list(_annotated_weeks_queryset(selected_pool.tournament))
+    selected_week = _resolve_valid_week_for_tournament(
+        selected_pool.tournament,
+        requested_week_id=week_id,
+        weeks_list=weeks_list
+    )
+
+    week_matches = list(
+        Match.objects.filter(week=selected_week)
+        .select_related('home_team', 'away_team')
+        .order_by('date_time')
+    ) if selected_week else []
+    matches_data = MatchSerializer(week_matches, many=True).data
+
+    if selected_week:
+        trigger_nonblocking_week_sync(selected_week, matches_list=week_matches)
+
+    # 1 sola consulta para todos los picks de la semana (sirve tanto para user_pick como para matches_breakdown)
+    week_preds = list(
+        Prediction.objects.filter(
+            pool=selected_pool,
+            match__week=selected_week
+        ).values('match_id', 'user_id', 'pick', 'is_correct')
+    ) if selected_week else []
+
+    if user_id and selected_week:
+        try:
+            uid_int = int(user_id)
+            user_picks = {
+                p['match_id']: {'pick': p['pick'], 'is_correct': p['is_correct']}
+                for p in week_preds
+                if p['user_id'] == uid_int
+            }
+            for m in matches_data:
+                m['user_pick'] = user_picks.get(m['id'])
+        except (ValueError, TypeError):
+            pass
+
+    memberships = list(selected_pool.memberships.select_related('user__profile').all())
+    standings = calculate_standings_with_medals(
+        selected_pool,
+        memberships,
+        week_id=selected_week.id if selected_week else None
+    )
+    matches_breakdown = _build_locked_picks_matrix(
+        selected_pool,
+        selected_week.id if selected_week else None,
+        week_matches=week_matches,
+        week_preds=week_preds
+    )
+
+    response = Response({
+        'league': selected_pool.tournament.league.code if (selected_pool.tournament and selected_pool.tournament.league) else league_code,
+        'pools': pools_data,
+        'selected_pool': PoolSerializer(selected_pool).data,
+        'weeks': MatchWeekSerializer(weeks_list, many=True).data,
+        'selected_week': MatchWeekSerializer(selected_week).data if selected_week else None,
+        'matches': matches_data,
+        'standings': standings,
+        'matches_breakdown': matches_breakdown,
+        'sync_queue': get_queue_status_summary(),
+    })
+    response['Cache-Control'] = 'private, no-store'
+    return response
+
+
 @api_view(['GET'])
 def api_list_weeks(request):
     tournament_id = request.query_params.get('tournament_id')
-    weeks = MatchWeek.objects.all()
+    weeks = _annotated_weeks_queryset()
     if tournament_id:
         weeks = weeks.filter(tournament_id=tournament_id)
-    weeks = weeks.annotate(matches_count=Count('matches')).order_by('week_number')
     response = Response(MatchWeekSerializer(weeks, many=True).data)
-    response['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+    response['Cache-Control'] = 'public, max-age=30, stale-while-revalidate=120'
     return response
 
-# Control de enfriamiento para sincronización automática con ESPN (3 minutos por jornada activa)
-def trigger_smart_espn_sync(week_obj):
-    """
-    Sincronización pasiva e inteligente con ESPN.
-    - Se ejecuta ÚNICAMENTE si la jornada tiene partidos en juego o que ya iniciaron y no están finalizados.
-    - Si todos los partidos ya terminaron o están en el futuro, no hace nada (0 llamadas a ESPN).
-    - Aplica una ventana de enfriamiento de 3 minutos (180s) entre consultas vía Django Cache.
-    """
-    if not week_obj or week_obj.is_closed:
-        return False
-
-    now = timezone.now()
-    has_active_or_due = week_obj.matches.filter(
-        Q(status='IN_PROGRESS') | Q(status='SCHEDULED', date_time__lte=now)
-    ).exists()
-
-    if not has_active_or_due:
-        return False
-
-    league_code = week_obj.tournament.league.code if (week_obj.tournament and week_obj.tournament.league) else 'LMX'
-    cache_key = f"espn_auto_sync_{league_code}_{week_obj.id}"
-
-    if cache.get(cache_key):
-        return False
-
-    cache.set(cache_key, True, timeout=180)  # 3 minutos de enfriamiento
-    try:
-        if league_code == 'NFL':
-            sync_espn_nfl(week_number=week_obj.week_number)
-        else:
-            sync_espn_lmx(week_number=week_obj.week_number)
-        return True
-    except Exception as e:
-        print(f"Auto-sync ESPN error for {cache_key}: {e}")
-        return False
 
 @api_view(['GET'])
 def api_list_matches(request):
@@ -229,8 +439,18 @@ def api_list_matches(request):
         return Response({'error': 'week_id requerido'}, status=status.HTTP_400_BAD_REQUEST)
 
     week_obj = MatchWeek.objects.select_related('tournament__league').filter(id=week_id).first()
+    if not week_obj:
+        return Response({'error': 'Jornada no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Si se envía pool_id y la week_obj pertenece a otro torneo, resolver la jornada activa del pool correcto
+    if pool_id:
+        pool_obj = Pool.objects.select_related('tournament__league').filter(id=pool_id).first()
+        if pool_obj and week_obj.tournament_id != pool_obj.tournament_id:
+            week_obj = _resolve_valid_week_for_tournament(pool_obj.tournament)
+            week_id = week_obj.id if week_obj else week_id
+
     if week_obj:
-        trigger_smart_espn_sync(week_obj)
+        trigger_nonblocking_week_sync(week_obj)
 
     matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
     matches_data = MatchSerializer(matches, many=True).data
@@ -246,7 +466,7 @@ def api_list_matches(request):
             m['user_pick'] = user_picks.get(m['id'])
 
     response = Response(matches_data)
-    response['Cache-Control'] = 'public, max-age=15, stale-while-revalidate=60'
+    response['Cache-Control'] = 'private, no-store' if user_id else 'public, max-age=15, stale-while-revalidate=60'
     return response
 
 # --- PREDICCIONES (PICKS) ---
@@ -262,11 +482,19 @@ def api_save_prediction(request):
         return Response({'error': 'Datos incompletos'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        match = Match.objects.get(id=match_id)
+        match = Match.objects.select_related('week__tournament', 'home_team', 'away_team').get(id=match_id)
         user = User.objects.get(id=user_id)
-        pool = Pool.objects.get(id=pool_id)
+        pool = Pool.objects.select_related('tournament').get(id=pool_id)
     except (Match.DoesNotExist, User.DoesNotExist, Pool.DoesNotExist):
         return Response({'error': 'Registro no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Prevenir cruce de datos: asegurar que la quiniela corresponda al torneo del partido
+    if match.week and match.week.tournament_id != pool.tournament_id:
+        correct_pool = Pool.objects.filter(tournament_id=match.week.tournament_id).first()
+        if correct_pool:
+            pool = correct_pool
+        else:
+            return Response({'error': 'El partido no corresponde al torneo de la quiniela seleccionada.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Validar que no esté bloqueado (Lockout individual)
     if match.is_locked:
@@ -366,56 +594,21 @@ def calculate_standings_with_medals(pool, memberships, week_id=None):
 
 @api_view(['GET'])
 def api_pool_standings(request, pool_id):
-    week_id = request.query_params.get('week_id')
+    requested_week_id = request.query_params.get('week_id')
     try:
         pool = Pool.objects.select_related('tournament__league').get(id=pool_id)
     except Pool.DoesNotExist:
         return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not week_id:
-        latest_week = pool.tournament.weeks.order_by('-week_number').first()
-        week_id = latest_week.id if latest_week else None
+    target_week = _resolve_valid_week_for_tournament(pool.tournament, requested_week_id=requested_week_id)
+    week_id = target_week.id if target_week else None
 
-    if week_id:
-        target_week = MatchWeek.objects.select_related('tournament__league').filter(id=week_id).first()
-        if target_week:
-            trigger_smart_espn_sync(target_week)
+    if target_week:
+        trigger_nonblocking_week_sync(target_week)
 
     memberships = pool.memberships.select_related('user__profile').all()
     standings = calculate_standings_with_medals(pool, memberships, week_id=week_id)
-
-    # Detalle de picks de la jornada (revelados para partidos iniciados o finalizados)
-    locked_picks_matrix = []
-    if week_id:
-        week_matches = Match.objects.filter(week_id=week_id).select_related('home_team', 'away_team').order_by('date_time')
-        
-        # Obtener todos los pronósticos de la semana en una sola consulta
-        week_preds = Prediction.objects.filter(
-            pool=pool,
-            match__week_id=week_id
-        ).values('match_id', 'user_id', 'pick', 'is_correct')
-
-        preds_by_match = {}
-        for p in week_preds:
-            m_id = p['match_id']
-            if m_id not in preds_by_match:
-                preds_by_match[m_id] = {}
-            preds_by_match[m_id][p['user_id']] = {
-                'pick': p['pick'],
-                'is_correct': p['is_correct']
-            }
-
-        for m in week_matches:
-            match_entry = {
-                'match_id': m.id,
-                'home_team': m.home_team.short_name or m.home_team.name,
-                'away_team': m.away_team.short_name or m.away_team.name,
-                'winner': m.winner,
-                'is_locked': m.is_locked,
-                'status': m.status,
-                'picks': preds_by_match.get(m.id, {}) if m.is_locked else {}
-            }
-            locked_picks_matrix.append(match_entry)
+    locked_picks_matrix = _build_locked_picks_matrix(pool, week_id)
 
     response = Response({
         'pool': PoolSerializer(pool).data,
@@ -430,20 +623,17 @@ def api_pool_standings(request, pool_id):
 
 @api_view(['GET'])
 def api_pool_activity(request, pool_id):
-    week_id = request.query_params.get('week_id')
+    requested_week_id = request.query_params.get('week_id')
     try:
-        pool = Pool.objects.get(id=pool_id)
+        pool = Pool.objects.select_related('tournament__league').get(id=pool_id)
     except Pool.DoesNotExist:
         return Response({'error': 'Quiniela no encontrada'}, status=status.HTTP_404_NOT_FOUND)
 
-    if not week_id:
-        latest_week = pool.tournament.weeks.order_by('-week_number').first()
-        week_id = latest_week.id if latest_week else None
+    target_week = _resolve_valid_week_for_tournament(pool.tournament, requested_week_id=requested_week_id)
+    week_id = target_week.id if target_week else None
 
-    if week_id:
-        target_week = MatchWeek.objects.select_related('tournament__league').filter(id=week_id).first()
-        if target_week:
-            trigger_smart_espn_sync(target_week)
+    if target_week:
+        trigger_nonblocking_week_sync(target_week)
 
     total_matches = Match.objects.filter(week_id=week_id).count() if week_id else 0
     members = pool.memberships.select_related('user__profile').all()
@@ -515,19 +705,73 @@ def api_send_auto_reminder(request, pool_id):
         'timestamp': timezone.now()
     })
 
-# --- SINCRONIZACIÓN ESPN ---
+# --- SINCRONIZACIÓN ESPN Y COLA DE MENSAJES ---
 
 @api_view(['POST'])
 def api_sync_espn(request):
     league_code = request.data.get('league', 'NFL').upper()
     week_number = request.data.get('week')
+    sync_upcoming = bool(request.data.get('sync_upcoming', False))
+    async_mode = bool(request.data.get('async', False))
 
-    if league_code == 'NFL':
+    if async_mode:
+        job_type = 'SYNC_UPCOMING_CALENDAR' if sync_upcoming else 'SYNC_LEAGUE_WEEK'
+        enqueued = enqueue_sync_job(
+            job_type=job_type,
+            league_code=league_code,
+            week_number=week_number,
+            cooldown_seconds=0,
+            priority=10,
+            force=True
+        )
+        return Response({
+            'status': 'queued',
+            'enqueued': enqueued,
+            'message': 'Trabajo de sincronización encolado en segundo plano.',
+            'queue': get_queue_status_summary()
+        })
+
+    if sync_upcoming:
+        result = sync_upcoming_calendar(league_code=league_code, fetch_forms=True)
+    elif league_code == 'NFL':
         result = sync_espn_nfl(week_number=week_number)
     else:
-        result = sync_espn_lmx(week_number=week_number)
+        result = sync_espn_lmx(week_number=week_number, fetch_forms=True)
 
     return Response(result)
+
+
+@api_view(['GET', 'POST'])
+def api_sync_queue_status(request):
+    """
+    Permite consultar el estado de la cola de sincronización en PostgreSQL/SQLite
+    o disparar un ciclo de procesamiento (útil para cron externo o panel de administración).
+    """
+    if request.method == 'POST':
+        action = request.data.get('action', 'tick')
+        league = request.data.get('league', 'ALL').upper()
+        week = request.data.get('week')
+        if action == 'enqueue_upcoming':
+            enqueue_sync_job('SYNC_UPCOMING_CALENDAR', league_code=league, cooldown_seconds=0, priority=8, force=True)
+        elif action == 'enqueue_week' and week:
+            enqueue_sync_job('SYNC_LEAGUE_WEEK', league_code=league, week_number=week, cooldown_seconds=0, priority=10, force=True)
+        processed = drain_sync_queue(max_jobs=5)
+        return Response({
+            'status': 'ok',
+            'processed_count': len(processed),
+            'queue': get_queue_status_summary(),
+        })
+
+    recent_jobs = list(
+        SyncJob.objects.order_by('-id')[:15].values(
+            'id', 'job_type', 'league_code', 'week_number', 'status',
+            'priority', 'matches_updated', 'started_at', 'completed_at', 'error_message'
+        )
+    )
+    return Response({
+        'queue': get_queue_status_summary(),
+        'recent_jobs': recent_jobs,
+    })
 
 # --- PORTAL DE ADMINISTRACIÓN EXCLUSIVO Y PROTEGIDO ---
 

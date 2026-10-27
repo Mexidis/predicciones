@@ -2,8 +2,10 @@ from django.test import TestCase
 from django.contrib.auth.models import User
 from django.utils import timezone
 from datetime import timedelta
-from .models import Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile
+from .models import Sport, League, Team, Tournament, MatchWeek, Match, Pool, PoolMembership, Prediction, UserProfile, SyncJob
 from .services.espn_sync import find_or_create_match, get_or_create_nfl_team, get_or_create_lmx_team, format_form_string
+from .services.sync_queue import enqueue_sync_job
+from .services.db_repair import repair_and_sync_all
 from .views import calculate_standings_with_medals
 
 class QuinielaCoreTests(TestCase):
@@ -97,3 +99,50 @@ class QuinielaCoreTests(TestCase):
         self.assertEqual(format_form_string("WLDWW"), "V-D-E-V-V")
         self.assertEqual(format_form_string("VDEVD"), "V-D-E-V-D")
         self.assertEqual(format_form_string(""), "")
+
+    def test_sync_queue_deduplication_and_cooldown(self):
+        """Verifica que la cola de mensajes evita trabajos duplicados y respeta ventanas de enfriamiento."""
+        first = enqueue_sync_job('SYNC_LIVE_SCORES', league_code='NFL', week_number=1, cooldown_seconds=180, priority=10)
+        second = enqueue_sync_job('SYNC_LIVE_SCORES', league_code='NFL', week_number=1, cooldown_seconds=180, priority=10)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(SyncJob.objects.filter(status='PENDING').count(), 1)
+
+    def test_bootstrap_endpoint_prevents_cross_league_contamination(self):
+        """Verifica que /api/bootstrap/ corrige un week_id que pertenece a otra liga y nunca cruza datos."""
+        lmx_league = League.objects.create(code="LMX", name="Liga MX", sport=self.sport)
+        lmx_tourn = Tournament.objects.create(name="Apertura 2026", league=lmx_league, year=2026)
+        lmx_week = MatchWeek.objects.create(tournament=lmx_tourn, week_number=14, name="Jornada 14")
+        lmx_pool = Pool.objects.create(name="LMX Pool", invite_code="LMX1", tournament=lmx_tourn)
+
+        # Enviar week_id de Liga MX pero pidiendo league=NFL
+        resp = self.client.get(f'/api/bootstrap/?league=NFL&week_id={lmx_week.id}&user_id={self.user1.id}')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['league'], 'NFL')
+        self.assertEqual(data['selected_pool']['id'], self.pool.id)
+        self.assertEqual(data['selected_week']['id'], self.week.id)
+        self.assertNotEqual(data['selected_week']['id'], lmx_week.id)
+
+    def test_idempotent_repair_preserves_predictions(self):
+        """Verifica que repair_and_sync_all no borra pronósticos ni marcadores finalizados."""
+        res1 = repair_and_sync_all(sync_remote=False)
+        self.assertEqual(res1['status'], 'ok')
+        w14 = MatchWeek.objects.get(tournament__league__code='LMX', week_number=14)
+        m14 = w14.matches.first()
+        pool_lmx = Pool.objects.get(invite_code='LMX-FAMILIA')
+        patrick = User.objects.get(username='patrick')
+
+        pred, _ = Prediction.objects.update_or_create(
+            pool=pool_lmx, user=patrick, match=m14, defaults={'pick': 'HOME'}
+        )
+        m14.update_result(2, 1, status='FINAL')
+
+        # Ejecutar repair de nuevo (simulando redeploy en Render)
+        repair_and_sync_all(sync_remote=False)
+        self.assertTrue(Prediction.objects.filter(id=pred.id, pick='HOME', is_correct=True).exists())
+        m14.refresh_from_db()
+        self.assertEqual(m14.status, 'FINAL')
+        self.assertEqual(m14.home_score, 2)
+

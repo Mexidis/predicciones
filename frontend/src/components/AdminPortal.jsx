@@ -94,16 +94,18 @@ export default function AdminPortal({
     let active = true;
     async function loadTournamentWeeks() {
       if (!currentPool?.tournament?.id) return;
+      setAdminMatches([]);
       try {
         const data = await api.getWeeks(currentPool.tournament.id);
         if (!active) return;
         if (data && data.length > 0) {
           setAdminWeeks(data);
-          // Prioritize open week with matches, or any week with matches, or last week
+          // Priorizar semana en juego ('LIVE'), o próxima con partidos ('UPCOMING'), o abierta con partidos
+          const liveWeek = data.find(w => !w.is_closed && w.week_state === 'LIVE');
+          const upcomingWeek = data.find(w => !w.is_closed && w.week_state === 'UPCOMING');
           const openWithMatches = data.find(w => !w.is_closed && (w.matches_count > 0 || w.matches_count === undefined));
-          const openWeek = data.find(w => !w.is_closed);
           const anyWithMatches = [...data].reverse().find(w => w.matches_count > 0);
-          const target = openWithMatches || openWeek || anyWithMatches || data[data.length - 1];
+          const target = liveWeek || upcomingWeek || openWithMatches || anyWithMatches || data[data.length - 1];
           setSelectedWeekId(target.id);
         } else {
           setAdminWeeks([]);
@@ -117,9 +119,9 @@ export default function AdminPortal({
       loadTournamentWeeks();
     }
     return () => { active = false; };
-  }, [selectedPoolId, adminUser]);
+  }, [selectedPoolId, adminUser, currentPool?.tournament?.id]);
 
-  // 3. Load matches when selectedWeekId changes
+  // 3. Load matches when selectedWeekId changes (validando que pertenezca al torneo actual)
   useEffect(() => {
     let active = true;
     async function loadMatches() {
@@ -127,9 +129,13 @@ export default function AdminPortal({
         setAdminMatches([]);
         return;
       }
+      const weekObj = adminWeeks.find(w => w.id === selectedWeekId);
+      if (weekObj && weekObj.tournament && currentPool?.tournament?.id && weekObj.tournament !== currentPool.tournament.id) {
+        return;
+      }
       setIsLoadingMatches(true);
       try {
-        const data = await api.getMatches(selectedWeekId);
+        const data = await api.getMatches(selectedWeekId, '', selectedPoolId);
         if (!active) return;
         if (data) {
           setAdminMatches(data);
@@ -153,7 +159,7 @@ export default function AdminPortal({
       loadMatches();
     }
     return () => { active = false; };
-  }, [selectedWeekId, adminUser]);
+  }, [selectedWeekId, selectedPoolId, adminWeeks, adminUser, currentPool?.tournament?.id]);
 
   // 4. Load participants
   const loadParticipants = async () => {

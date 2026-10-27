@@ -15,6 +15,9 @@ urlpatterns = [
     path('pools/<int:pool_id>/activity/', views.api_pool_activity, name='api_pool_activity'),
     path('pools/<int:pool_id>/remind/', views.api_send_auto_reminder, name='api_pool_remind'),
 
+    # Bootstrap unificado de alta velocidad
+    path('bootstrap/', views.api_bootstrap, name='api_bootstrap'),
+
     # Torneos, Jornadas y Partidos
     path('tournaments/', views.api_list_tournaments, name='api_tournaments'),
     path('weeks/', views.api_list_weeks, name='api_weeks'),
@@ -23,8 +26,9 @@ urlpatterns = [
     # Pronósticos
     path('predictions/save/', views.api_save_prediction, name='api_save_prediction'),
 
-    # Sincronización
+    # Sincronización y Cola de Mensajes
     path('sync/espn/', views.api_sync_espn, name='api_sync_espn'),
+    path('sync/queue/', views.api_sync_queue_status, name='api_sync_queue_status'),
 
     # Panel de Administración Protegido
     path('admin-portal/login/', views.api_admin_login, name='api_admin_login'),
