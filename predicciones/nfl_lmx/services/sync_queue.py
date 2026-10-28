@@ -70,7 +70,7 @@ def trigger_nonblocking_week_sync(week_obj, matches_list=None):
     """
     Reemplazo asíncrono no bloqueante para lecturas de jornadas:
     - Si se pasa `matches_list` ya cargada en memoria, realiza 0 consultas SQL adicionales.
-    - Si la jornada está vacía, encola su sincronización inmediata de calendario.
+    - Si la jornada está vacía o incompleta (ej. J15 con 9 partidos en vez de 10), encola sincronización inmediata.
     - Si tiene partidos en juego o cuya hora de inicio ya pasó y siguen en SCHEDULED,
       encola actualización de marcadores en vivo con enfriamiento de 3 minutos.
     """
@@ -84,15 +84,21 @@ def trigger_nonblocking_week_sync(week_obj, matches_list=None):
     )
 
     now = timezone.now()
+    expected_matches = 7 if (league_code == 'LMX' and week_obj.week_number == 7) else (10 if (league_code == 'LMX' and week_obj.week_number in (15, 16)) else 9)
+    current_count = len(matches_list) if matches_list is not None else week_obj.matches.count()
+
+    # Si la jornada está vacía o tiene menos partidos de los registrados en el calendario oficial
+    if current_count < expected_matches and not week_obj.is_closed:
+        return enqueue_sync_job(
+            job_type='SYNC_LEAGUE_WEEK',
+            league_code=league_code,
+            week_number=week_obj.week_number,
+            cooldown_seconds=60,
+            priority=9,
+            force=True
+        )
+
     if matches_list is not None:
-        if len(matches_list) == 0:
-            return enqueue_sync_job(
-                job_type='SYNC_LEAGUE_WEEK',
-                league_code=league_code,
-                week_number=week_obj.week_number,
-                cooldown_seconds=300,
-                priority=8
-            )
         if week_obj.is_closed:
             return False
         has_active_or_due = any(
@@ -100,18 +106,9 @@ def trigger_nonblocking_week_sync(week_obj, matches_list=None):
             for m in matches_list
         )
     else:
-        matches_qs = week_obj.matches.all()
-        if not matches_qs.exists():
-            return enqueue_sync_job(
-                job_type='SYNC_LEAGUE_WEEK',
-                league_code=league_code,
-                week_number=week_obj.week_number,
-                cooldown_seconds=300,
-                priority=8
-            )
         if week_obj.is_closed:
             return False
-        has_active_or_due = matches_qs.filter(
+        has_active_or_due = week_obj.matches.filter(
             Q(status='IN_PROGRESS') | Q(status='SCHEDULED', date_time__lte=now)
         ).exists()
 
@@ -123,6 +120,7 @@ def trigger_nonblocking_week_sync(week_obj, matches_list=None):
             cooldown_seconds=180,
             priority=10
         )
+    return False
 
     return False
 
@@ -236,18 +234,25 @@ def schedule_periodic_sync_checks():
     """
     now = timezone.now()
 
-    # 1. Revisar si hay jornadas pasadas o futuras vacías (1-17 LMX, 1-18 NFL)
+    # 1. Revisar si hay jornadas pasadas o futuras vacías o incompletas (1-17 LMX, 1-18 NFL)
     empty_weeks = (
         MatchWeek.objects.annotate(m_count=Count('matches'))
         .filter(m_count=0)
         .select_related('tournament__league')
     )
-    if empty_weeks.exists():
+    lmx_target_counts = {7: 7, 15: 10, 16: 10}
+    incomplete_weeks = [
+        w for w in MatchWeek.objects.filter(tournament__league__code='LMX', is_closed=False).annotate(m_count=Count('matches'))
+        if w.m_count < lmx_target_counts.get(w.week_number, 9)
+    ]
+
+    if empty_weeks.exists() or incomplete_weeks:
         enqueue_sync_job(
             job_type='SYNC_UPCOMING_CALENDAR',
             league_code='ALL',
-            cooldown_seconds=1800,
-            priority=6
+            cooldown_seconds=180,
+            priority=8,
+            force=True
         )
     else:
         # Refresco periódico del calendario futuro cada 6 horas por cambios de horario en ESPN

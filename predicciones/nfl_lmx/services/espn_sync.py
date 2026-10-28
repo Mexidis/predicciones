@@ -342,6 +342,7 @@ def find_or_create_match(week_obj, home_team, away_team, espn_id, kickoff):
             ).first()
             if match and match.week_id != week_obj.id:
                 match.week = week_obj
+                match.save(update_fields=['week'])
 
     if not match:
         match = Match.objects.filter(

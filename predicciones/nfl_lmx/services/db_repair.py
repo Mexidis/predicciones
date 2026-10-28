@@ -27,11 +27,19 @@ def _upsert_match_spec(week_obj, home_team, away_team, dt_str, hs=None, as_=None
     if af and (not match.away_form or match.away_form == 'D-V-E-D-V'):
         match.away_form = af
 
-    if status == 'FINAL' and hs is not None and as_ is not None:
-        if match.status != 'FINAL' or match.home_score != hs or match.away_score != as_:
-            match.update_result(hs, as_, status='FINAL')
-        else:
-            match.save()
+    if match.status == 'FINAL':
+        # Si el partido ya estaba FINAL en la base de datos, conservar su marcador oficial
+        updated_fields = []
+        if hf and not match.home_form:
+            match.home_form = hf
+            updated_fields.append('home_form')
+        if af and not match.away_form:
+            match.away_form = af
+            updated_fields.append('away_form')
+        if updated_fields:
+            match.save(update_fields=updated_fields)
+    elif status == 'FINAL' and hs is not None and as_ is not None:
+        match.update_result(hs, as_, status='FINAL')
     else:
         # Solo inicializar como SCHEDULED si no ha sido finalizado previamente
         if not existed and match.status != 'FINAL':
@@ -285,23 +293,24 @@ def repair_and_sync_all(sync_remote=True):
             if created:
                 j13_preds_seeded += 1
 
-    # 8. Jornada 14 Liga MX (Upsert idempotente con rachas reales actualizadas)
+    # 8. Jornada 14 Liga MX (Upsert idempotente con marcadores finales oficiales y rachas reales)
     w14 = lmx_weeks[14]
     j14_specs = [
-        {"home": "Necaxa", "away": "FC Juárez", "dt": "2026-10-23 19:00:00", "hf": "D-E-D-D-E", "af": "D-E-D-D-E"},
-        {"home": "Atlante", "away": "San Luis", "dt": "2026-10-23 21:00:00", "hf": "V-D-D-V-D", "af": "V-D-E-V-V"},
-        {"home": "León", "away": "Toluca", "dt": "2026-10-24 17:00:00", "hf": "V-E-D-V-E", "af": "E-D-E-E-E"},
-        {"home": "Rayados", "away": "Chivas", "dt": "2026-10-24 19:00:00", "hf": "D-E-V-V-D", "af": "D-E-E-V-V"},
-        {"home": "Pumas", "away": "Tigres", "dt": "2026-10-24 21:10:00", "hf": "D-E-V-D-E", "af": "V-V-E-D-E"},
-        {"home": "Atlas", "away": "Puebla", "dt": "2026-10-25 17:00:00", "hf": "V-E-V-D-V", "af": "D-E-E-D-D"},
-        {"home": "Querétaro", "away": "Cruz Azul", "dt": "2026-10-25 19:00:00", "hf": "V-V-D-D-D", "af": "E-E-V-V-V"},
-        {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00", "hf": "V-E-V-V-D", "af": "D-E-D-D-V"},
-        {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00", "hf": "D-E-E-E-V", "af": "V-V-V-V-D"},
+        {"home": "Necaxa", "away": "FC Juárez", "dt": "2026-10-23 19:00:00", "hs": 1, "as": 1, "status": "FINAL", "win": "DRAW", "hf": "D-E-D-D-E", "af": "D-E-D-D-E"},
+        {"home": "Atlante", "away": "San Luis", "dt": "2026-10-23 21:00:00", "hs": 0, "as": 1, "status": "FINAL", "win": "AWAY", "hf": "V-D-D-V-D", "af": "V-D-E-V-V"},
+        {"home": "León", "away": "Toluca", "dt": "2026-10-24 17:00:00", "hs": 1, "as": 1, "status": "FINAL", "win": "DRAW", "hf": "V-E-D-V-E", "af": "E-D-E-E-E"},
+        {"home": "Rayados", "away": "Chivas", "dt": "2026-10-24 19:00:00", "hs": 0, "as": 1, "status": "FINAL", "win": "AWAY", "hf": "D-E-V-V-D", "af": "D-E-E-V-V"},
+        {"home": "Pumas", "away": "Tigres", "dt": "2026-10-24 21:10:00", "hs": 1, "as": 1, "status": "FINAL", "win": "DRAW", "hf": "D-E-V-D-E", "af": "V-V-E-D-E"},
+        {"home": "Atlas", "away": "Puebla", "dt": "2026-10-25 17:00:00", "hs": 4, "as": 3, "status": "FINAL", "win": "HOME", "hf": "V-E-V-D-V", "af": "D-E-E-D-D"},
+        {"home": "Querétaro", "away": "Cruz Azul", "dt": "2026-10-25 19:00:00", "hs": 1, "as": 3, "status": "FINAL", "win": "AWAY", "hf": "V-V-D-D-D", "af": "E-E-V-V-V"},
+        {"home": "América", "away": "Pachuca", "dt": "2026-10-25 19:05:00", "hs": 1, "as": 2, "status": "FINAL", "win": "AWAY", "hf": "V-E-V-V-D", "af": "D-E-D-D-V"},
+        {"home": "Tijuana", "away": "Santos", "dt": "2026-10-25 21:10:00", "hs": 4, "as": 1, "status": "FINAL", "win": "HOME", "hf": "D-E-E-E-V", "af": "V-V-V-V-D"},
     ]
     for sp in j14_specs:
         _upsert_match_spec(
             w14, lmx_teams[sp["home"]], lmx_teams[sp["away"]],
-            sp["dt"], status="SCHEDULED", hf=sp["hf"], af=sp["af"]
+            sp["dt"], hs=sp["hs"], as_=sp["as"], status=sp["status"], win=sp["win"],
+            hf=sp["hf"], af=sp["af"]
         )
     _refresh_week_metadata(w14, min_expected_matches=8)
 

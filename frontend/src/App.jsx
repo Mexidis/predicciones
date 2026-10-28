@@ -378,8 +378,52 @@ export default function App() {
               })}
             </div>
 
+            {/* Banner informativo si el usuario está en Jornada 7 (donde era originario el partido pendiente) */}
+            {currentLeague === 'LMX' && selectedWeek?.week_number === 7 && (
+              <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-500/30 text-xs">
+                <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-medium">
+                  <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+                  <span>
+                    El partido pendiente <strong>América vs Tijuana</strong> se jugará mañana Miércoles y está para pronosticar en <strong>Jornada 15</strong>.
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    const j15 = weeksToRender.find(w => w.week_number === 15);
+                    if (j15) handleSelectWeek(j15);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold font-sport uppercase tracking-wider text-[11px] transition flex-shrink-0"
+                >
+                  <span>Ir a Jornada 15</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Banner informativo si está en Jornada 14 (recién finalizada el domingo) */}
+            {currentLeague === 'LMX' && selectedWeek?.week_number === 14 && (
+              <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-indigo-50/90 dark:bg-[#101532] border border-indigo-200 dark:border-indigo-500/20 text-xs">
+                <div className="flex items-center gap-2 text-indigo-900 dark:text-indigo-200 font-medium">
+                  <Flame className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
+                  <span>
+                    Jornada 14 finalizada. ¡La <strong>Jornada 15</strong> arranca mañana Miércoles con <strong>América vs Tijuana</strong>!
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    const j15 = weeksToRender.find(w => w.week_number === 15);
+                    if (j15) handleSelectWeek(j15);
+                  }}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold font-sport uppercase tracking-wider text-[11px] transition flex-shrink-0"
+                >
+                  <span>Ir a Jornada 15</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* Banner rápido para adelantar pronósticos de siguientes jornadas */}
-            {nextUpcomingWeek && activeTab === 'picks' && (
+            {nextUpcomingWeek && activeTab === 'picks' && selectedWeek?.week_number !== 7 && selectedWeek?.week_number !== 14 && (
               <div className="flex items-center justify-between gap-2 px-3.5 py-2 rounded-2xl bg-indigo-50/80 dark:bg-[#101532] border border-indigo-200/70 dark:border-indigo-500/20 text-xs">
                 <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300 font-medium">
                   <Clock className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
