@@ -15,6 +15,9 @@ _lmx_team_form_cache = {}
 _LMX_FORM_TTL_SECONDS = 7200
 
 # Mapeo oficial de fechas por Jornada para Liga MX Apertura 2026
+# Incluye los partidos pendientes reprogramados de J7 en la jornada de la semana en que se disputan:
+# - América vs Tijuana (401876986, originalmente J7) -> Miércoles 28 Oct 2026 en Jornada 15
+# - Querétaro vs Rayados (401876988, originalmente J7) -> Sábado 14 Nov 2026 en Jornada 16
 LMX_JORNADAS_DATES = {
     1: ['20260716', '20260717', '20260718'],
     2: ['20260721', '20260724', '20260725', '20260726'],
@@ -22,16 +25,16 @@ LMX_JORNADAS_DATES = {
     4: ['20260815', '20260816', '20260817'],
     5: ['20260821', '20260822', '20260823'],
     6: ['20260828', '20260829', '20260830'],
-    7: ['20260904', '20260905', '20260906'],
-    8: ['20260910', '20260911', '20260912', '20260913', '20260914', '20260915'],
+    7: ['20260904', '20260905', '20260906', '20260910', '20260915'],
+    8: ['20260911', '20260912', '20260913', '20260914'],
     9: ['20260918', '20260919', '20260920'],
     10: ['20260925', '20260926', '20260927'],
     11: ['20261009', '20261010', '20261011'],
     12: ['20261016', '20261017', '20261018'],
     13: ['20261020', '20261021'],
     14: ['20261023', '20261024', '20261025'],
-    15: ['20261030', '20261031', '20261101'],
-    16: ['20261106', '20261107', '20261108'],
+    15: ['20261028', '20261030', '20261031', '20261101'],
+    16: ['20261106', '20261107', '20261108', '20261114'],
     17: ['20261120', '20261121', '20261122'],
 }
 
@@ -326,12 +329,19 @@ def resolve_espn_match_status(event):
 
 def find_or_create_match(week_obj, home_team, away_team, espn_id, kickoff):
     """
-    Busca un partido en la semana evitando duplicados causados por inversión de local/visita
-    o falta previa de espn_id.
+    Busca un partido en la semana evitando duplicados causados por inversión de local/visita,
+    reprogramación entre jornadas o falta previa de espn_id.
     """
     match = None
     if espn_id:
         match = Match.objects.filter(week=week_obj, espn_id=espn_id).first()
+        if not match and week_obj and week_obj.tournament_id:
+            match = Match.objects.filter(
+                week__tournament_id=week_obj.tournament_id,
+                espn_id=espn_id
+            ).first()
+            if match and match.week_id != week_obj.id:
+                match.week = week_obj
 
     if not match:
         match = Match.objects.filter(
@@ -610,7 +620,7 @@ def sync_espn_lmx(week_number=None, date_str=None, fetch_forms=True):
                     match.update_result(h_score, a_score, status='FINAL')
                     any_newly_finalized = True
                 else:
-                    match.save(update_fields=['date_time', 'espn_id', 'home_form', 'away_form'])
+                    match.save(update_fields=['week', 'date_time', 'espn_id', 'home_form', 'away_form'])
             else:
                 match.status = status
                 match.home_score = h_score
@@ -618,7 +628,7 @@ def sync_espn_lmx(week_number=None, date_str=None, fetch_forms=True):
                 match.save()
         elif status in ['POSTPONED', 'CANCELED']:
             match.status = status
-            match.save(update_fields=['status', 'date_time', 'espn_id'])
+            match.save(update_fields=['week', 'status', 'date_time', 'espn_id'])
         else:
             if match.status != 'FINAL':
                 match.status = status
@@ -668,8 +678,9 @@ def sync_upcoming_calendar(league_code='ALL', fetch_forms=False):
         }
         for j in range(1, 18):
             m_total, m_final = lmx_stats.get(j, (0, 0))
-            # Si es una jornada pasada (<= 13) y ya tiene sus 9 partidos finalizados, no re-consultar a ESPN
-            if j <= 13 and m_total >= 9 and m_final >= 9:
+            expected_count = 7 if j == 7 else (10 if j in (15, 16) else 9)
+            # Si es una jornada pasada (<= 13) y ya tiene todos sus partidos esperados finalizados, no re-consultar a ESPN
+            if j <= 13 and m_total == expected_count and m_final == expected_count:
                 continue
             res = sync_espn_lmx(week_number=j, fetch_forms=True)
             lmx_updated += res.get('matches_updated', 0)

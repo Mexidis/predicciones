@@ -119,6 +119,11 @@ export default function TapToPick({
                   <div className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 text-[11px] font-medium">
                     <Clock className="w-3.5 h-3.5 text-slate-400 dark:text-slate-500" />
                     <span>{formatDate(m.date_time)}</span>
+                    {(m.espn_id === '401876986' || m.espn_id === '401876988') && (
+                      <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold font-sport uppercase tracking-wider bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
+                        Pendiente J7
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-1.5">

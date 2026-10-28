@@ -14,13 +14,13 @@ from .espn_sync import (
 )
 
 
-def _upsert_match_spec(week_obj, home_team, away_team, dt_str, hs=None, as_=None, status='SCHEDULED', win=None, hf='', af=''):
+def _upsert_match_spec(week_obj, home_team, away_team, dt_str, hs=None, as_=None, status='SCHEDULED', win=None, hf='', af='', espn_id=None):
     """
     Crea o actualiza un partido de forma idempotente sin destruir su ID ni las predicciones asociadas.
     Si el partido ya estaba FINAL en la base de datos, conserva su marcador oficial.
     """
     dt = timezone.make_aware(datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S"))
-    match, existed = find_or_create_match(week_obj, home_team, away_team, espn_id=None, kickoff=dt)
+    match, existed = find_or_create_match(week_obj, home_team, away_team, espn_id=espn_id, kickoff=dt)
 
     if hf and (not match.home_form or match.home_form == 'V-D-V-E-V'):
         match.home_form = hf
@@ -303,6 +303,36 @@ def repair_and_sync_all(sync_remote=True):
             w14, lmx_teams[sp["home"]], lmx_teams[sp["away"]],
             sp["dt"], status="SCHEDULED", hf=sp["hf"], af=sp["af"]
         )
+    _refresh_week_metadata(w14, min_expected_matches=8)
+
+    # 8b. Jornada 15 Liga MX (Incluye partido pendiente de J7: América vs Tijuana el Mié 28 Oct + 9 regulares)
+    w15 = lmx_weeks[15]
+    j15_specs = [
+        {"home": "América", "away": "Tijuana", "dt": "2026-10-28 21:00:00", "espn_id": "401876986", "hf": "V-E-V-V-D", "af": "D-E-E-E-V"},
+        {"home": "San Luis", "away": "Atlas", "dt": "2026-10-30 19:00:00", "espn_id": "401876919", "hf": "V-D-E-V-V", "af": "V-E-V-D-V"},
+        {"home": "FC Juárez", "away": "Querétaro", "dt": "2026-10-30 19:00:00", "espn_id": "401876918", "hf": "D-E-D-D-E", "af": "V-V-D-D-D"},
+        {"home": "Puebla", "away": "Pumas", "dt": "2026-10-30 21:00:00", "espn_id": "401876917", "hf": "D-E-E-D-D", "af": "D-E-V-D-E"},
+        {"home": "Pachuca", "away": "Tigres", "dt": "2026-10-31 17:00:00", "espn_id": "401876916", "hf": "D-E-D-D-V", "af": "V-V-E-D-E"},
+        {"home": "Rayados", "away": "Tijuana", "dt": "2026-10-31 19:00:00", "espn_id": "401876914", "hf": "D-E-V-V-D", "af": "D-E-E-E-V"},
+        {"home": "Chivas", "away": "Atlante", "dt": "2026-10-31 19:07:00", "espn_id": "401876915", "hf": "D-E-E-V-V", "af": "V-D-D-V-D"},
+        {"home": "América", "away": "Toluca", "dt": "2026-10-31 21:00:00", "espn_id": "401876913", "hf": "V-E-V-V-D", "af": "E-D-E-E-E"},
+        {"home": "Santos", "away": "Necaxa", "dt": "2026-11-01 17:00:00", "espn_id": "401876912", "hf": "V-V-V-V-D", "af": "D-E-D-D-E"},
+        {"home": "Cruz Azul", "away": "León", "dt": "2026-11-01 19:00:00", "espn_id": "401876911", "hf": "E-E-V-V-V", "af": "V-E-D-V-E"},
+    ]
+    for sp in j15_specs:
+        _upsert_match_spec(
+            w15, lmx_teams[sp["home"]], lmx_teams[sp["away"]],
+            sp["dt"], status="SCHEDULED", hf=sp["hf"], af=sp["af"], espn_id=sp["espn_id"]
+        )
+    _refresh_week_metadata(w15, min_expected_matches=8)
+
+    # 8c. Partido pendiente de J7 reprogramado para el Sáb 14 Nov dentro de Jornada 16
+    w16 = lmx_weeks[16]
+    _upsert_match_spec(
+        w16, lmx_teams["Querétaro"], lmx_teams["Rayados"],
+        "2026-11-14 17:00:00", status="SCHEDULED", hf="V-V-D-D-D", af="D-E-V-V-D", espn_id="401876988"
+    )
+    _refresh_week_metadata(w16, min_expected_matches=8)
 
     # 9. Semana 7 NFL (Upsert idempotente: conserva marcadores FINAL si ya se jugaron)
     w7 = nfl_weeks[7]
